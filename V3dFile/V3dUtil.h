@@ -1,3 +1,5 @@
+#pragma once
+
 #include "3rdParty/xstream.h"
 #include "V3dTypes.h"
 

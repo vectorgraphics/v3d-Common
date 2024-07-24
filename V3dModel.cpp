@@ -12,6 +12,13 @@ V3dModel::V3dModel(const std::string& filePath) {
     initProjection();
 }
 
+
+V3dModel::V3dModel(xdr::memixstream& xdrFile) {
+    file = std::make_unique<V3dFile>(xdrFile);
+
+    initProjection();
+}
+
 void V3dModel::initProjection() {
     h = -std::tan(0.5f * file->headerInfo.angleOfView) * file->headerInfo.maxBound.z;
 

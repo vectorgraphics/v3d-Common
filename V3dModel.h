@@ -9,6 +9,7 @@
 
 struct V3dModel {
     V3dModel(const std::string& filePath);
+    V3dModel(xdr::memixstream& xdrFile);
     V3dModel(const V3dModel& other) = default;
     V3dModel(V3dModel&& other) noexcept = default;
     V3dModel& operator=(const V3dModel& other) = default;

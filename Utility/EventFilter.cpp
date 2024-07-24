@@ -1,8 +1,9 @@
 #include "EventFilter.h"
-#include "v3d_generator.h"
 
 #include <qcoreevent.h>
 #include <qevent.h>
+
+#include "V3dModelManager.h"
 
 EventFilter::EventFilter(QObject* parent, V3dModelManager* modelManager) 
     : QObject(parent), modelManager(modelManager) { }
