@@ -21,6 +21,9 @@ public:
 
     QImage RenderModel(size_t pageNumber, size_t modelIndex, int width, int height);
 
+    V3dModel& Model(size_t pageNumber, size_t modelIndex);
+    std::vector<V3dModel>& Models(size_t pageNumber);
+
     glm::vec2 GetPageSize(size_t pageNumber);
 
     bool mouseMoveEvent(QMouseEvent* event);

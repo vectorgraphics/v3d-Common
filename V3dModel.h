@@ -8,8 +8,8 @@
 #include "V3dFile/V3dFile.h"
 
 struct V3dModel {
-    V3dModel(const std::string& filePath);
-    V3dModel(xdr::memixstream& xdrFile);
+    V3dModel(const std::string& filePath, const glm::vec2& minBound = { 0.0f, 0.0f }, const glm::vec2& maxBound = { 1.0f, 1.0f });
+    V3dModel(xdr::memixstream& xdrFile, const glm::vec2& minBound = { 0.0f, 0.0f }, const glm::vec2& maxBound = { 1.0f, 1.0f });
     V3dModel(const V3dModel& other) = default;
     V3dModel(V3dModel&& other) noexcept = default;
     V3dModel& operator=(const V3dModel& other) = default;
@@ -26,6 +26,9 @@ struct V3dModel {
     void dragModeZoom   (const glm::vec2& normalizedMousePosition, const glm::vec2& lastNormalizedMousePosition, const glm::vec2& pageViewSize);
     void dragModePan    (const glm::vec2& normalizedMousePosition, const glm::vec2& lastNormalizedMousePosition, const glm::vec2& pageViewSize);
     void dragModeRotate (const glm::vec2& normalizedMousePosition, const glm::vec2& lastNormalizedMousePosition, const glm::vec2& pageViewSize);
+
+    glm::vec2 minBound; // Normalized [0.0, 1.0] bounds of the model on its page
+    glm::vec2 maxBound;
 
     float zoom{ 1.0f };
     float lastZoom{ zoom };

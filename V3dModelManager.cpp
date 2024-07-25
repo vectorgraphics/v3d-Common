@@ -70,6 +70,14 @@ QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int wi
     return image;
 }
 
+V3dModel& V3dModelManager::Model(size_t pageNumber, size_t modelIndex) {
+    return m_Models[pageNumber][modelIndex];
+}
+
+std::vector<V3dModel>& V3dModelManager::Models(size_t pageNumber) {
+    return m_Models[pageNumber];
+}
+
 glm::vec2 V3dModelManager::GetPageSize(size_t pageNumber) {
     return glm::vec2{ m_Models[pageNumber][0].file->headerInfo.canvasWidth, m_Models[pageNumber][0].file->headerInfo.canvasHeight };
 }

@@ -6,14 +6,18 @@
 
 #include "Utility/Arcball.h"
 
-V3dModel::V3dModel(const std::string& filePath) {
+V3dModel::V3dModel(const std::string& filePath, const glm::vec2& minBound, const glm::vec2& maxBound) 
+    : minBound(minBound), maxBound(maxBound) {
+        
     file = std::make_unique<V3dFile>(filePath);
 
     initProjection();
 }
 
 
-V3dModel::V3dModel(xdr::memixstream& xdrFile) {
+V3dModel::V3dModel(xdr::memixstream& xdrFile, const glm::vec2& minBound, const glm::vec2& maxBound) 
+    : minBound(minBound), maxBound(maxBound) {
+
     file = std::make_unique<V3dFile>(xdrFile);
 
     initProjection();
