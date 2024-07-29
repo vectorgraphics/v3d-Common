@@ -5,10 +5,13 @@
 #include <QApplication>
 #include <QBoxLayout>
 
+#include <area.h>
+
 #include "Utility/EventFilter.h"
 #include "Utility/ProtectedFunctionCaller.h"
 
-V3dModelManager::V3dModelManager() {
+V3dModelManager::V3dModelManager(const Okular::Document* document) 
+    : m_Document(document) {
     m_PageView = GetPageViewWidget();
 
     m_EventFilter = new EventFilter(m_PageView, this);
@@ -82,50 +85,84 @@ glm::vec2 V3dModelManager::GetPageSize(size_t pageNumber) {
     return glm::vec2{ m_Models[pageNumber][0].file->headerInfo.canvasWidth, m_Models[pageNumber][0].file->headerInfo.canvasHeight };
 }
 
+void V3dModelManager::SetDocument(const Okular::Document* document) {
+    m_Document = document;
+}
+
 bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
-    m_MousePosition.x = event->globalPos().x();
-    m_MousePosition.y = event->globalPos().y();
+    m_MousePosition.x = event->x();
+    m_MousePosition.y = event->y();
 
     if (m_MouseDown == false) {
         return true;
     }
 
-    glm::vec2 normalizedMousePosition{ };
-    glm::vec2 lastNormalizedMousePosition{ };
+    for (size_t i = 0; i < m_Models.size(); ++i) {
+        int horizontalMargin = (m_PageView->width() - m_CachedRequestSizes[i].size.x) / 2;
+        int verticalMargin = (m_PageView->height() - m_CachedRequestSizes[i].size.y) / 2;
 
-    glm::vec2 pageViewSize = { m_PageView->width(), m_PageView->height() };
-    glm::vec2 halfPageViewDimensions = pageViewSize / 2.0f;
+        bool horizontalyOnPage = m_MousePosition.x > horizontalMargin && m_MousePosition.x < horizontalMargin + m_CachedRequestSizes[i].size.x;
+        bool verticalyOnPage = m_MousePosition.y > verticalMargin && m_MousePosition.y < verticalMargin + m_CachedRequestSizes[i].size.y;
 
-    normalizedMousePosition.x = (float)(m_MousePosition.x - halfPageViewDimensions.x) / halfPageViewDimensions.x;
-    normalizedMousePosition.y = (float)(m_MousePosition.y - halfPageViewDimensions.y) / halfPageViewDimensions.y;
-
-    lastNormalizedMousePosition.x = (float)(m_LastMousePosition.x - halfPageViewDimensions.x) / halfPageViewDimensions.x;
-    lastNormalizedMousePosition.y = (float)(m_LastMousePosition.y - halfPageViewDimensions.y) / halfPageViewDimensions.y;
-
-    switch (m_DragMode) {
-        case DragMode::SHIFT: {
-            m_Models[0][0].dragModeShift(normalizedMousePosition, lastNormalizedMousePosition, pageViewSize);
-            break;
+        if (!(horizontalyOnPage && verticalyOnPage)) {
+            continue;
         }
-        case DragMode::ZOOM: {
-            m_Models[0][0].dragModeZoom(normalizedMousePosition, lastNormalizedMousePosition, pageViewSize);
-            break;
-        }
-        case DragMode::PAN: {
-            m_Models[0][0].dragModePan(normalizedMousePosition, lastNormalizedMousePosition, pageViewSize);
-            break;
-        }
-        case DragMode::ROTATE: {
-            m_Models[0][0].dragModeRotate(normalizedMousePosition, lastNormalizedMousePosition, pageViewSize);
-            break;
+
+        glm::vec2 normalizedPositionOnPage = {
+            (float)(m_MousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[i].size.x,
+            (float)(m_MousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[i].size.y
+        };
+
+        glm::vec2 lastNormalizedPositionOnPage = {
+            (float)(m_LastMousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[i].size.x,
+            (float)(m_LastMousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[i].size.y
+        };
+
+        for (auto& model : m_Models[i]) {
+            glm::vec2 normalizedPositionOnModel = {
+                (normalizedPositionOnPage.x - model.minBound.x) / (model.maxBound.x - model.minBound.x),
+                (normalizedPositionOnPage.y - model.minBound.y) / (model.maxBound.y - model.minBound.y)
+            };
+
+            glm::vec2 lastNormalizedPositionOnModel = {
+                (lastNormalizedPositionOnPage.x - model.minBound.x) / (model.maxBound.x - model.minBound.x),
+                (lastNormalizedPositionOnPage.y - model.minBound.y) / (model.maxBound.y - model.minBound.y)
+            };
+
+            bool horizontalyOnModel = normalizedPositionOnPage.x > model.minBound.x && normalizedPositionOnPage.x < model.maxBound.x;
+            bool verticalyOnModel = normalizedPositionOnPage.y > model.minBound.y && normalizedPositionOnPage.y < model.maxBound.y;
+
+            if (!(horizontalyOnModel && verticalyOnModel)) {
+                continue;
+            }
+
+            glm::vec2 pageViewSize = { m_PageView->width(), m_PageView->height() };
+
+            switch (m_DragMode) {
+                case DragMode::SHIFT: {
+                    model.dragModeShift(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
+                    break;
+                }
+                case DragMode::ZOOM: {
+                    model.dragModeZoom(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
+                    break;
+                }
+                case DragMode::PAN: {
+                    model.dragModePan(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
+                    break;
+                }
+                case DragMode::ROTATE: {
+                    model.dragModeRotate(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
+                    break;
+                }
+            }
         }
     }
 
+    requestPixmapRefresh();
+
     m_LastMousePosition.x = m_MousePosition.x;
     m_LastMousePosition.y = m_MousePosition.y;
-
-    m_Models[0][0].setProjection(GetPageSize(0)); // TODO
-    requestPixmapRefresh();
 
     return true;
 }
@@ -165,6 +202,14 @@ bool V3dModelManager::mouseButtonReleaseEvent(QMouseEvent* event) {
     m_MouseDown = false;
 
     return true;
+}
+
+void V3dModelManager::CacheRequestSize(size_t pageNumber, int width, int height, int priority) {
+    m_CachedRequestSizes.resize(pageNumber + 1);
+
+    if (priority <= m_CachedRequestSizes[pageNumber].priority) {
+        m_CachedRequestSizes[pageNumber] = RequestCache{ glm::ivec2{ width, height }, priority };
+    }
 }
 
 QAbstractScrollArea* V3dModelManager::GetPageViewWidget() {
