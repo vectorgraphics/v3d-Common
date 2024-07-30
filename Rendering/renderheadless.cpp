@@ -500,8 +500,8 @@ void HeadlessRenderer::createGraphicsPipeline() {
 	shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 	shaderStages[1].pName = "main";
 
-	shaderStages[0].module = vks::tools::loadShader((shaderPath + "triangle.vert.spv").c_str(), device);
-	shaderStages[1].module = vks::tools::loadShader((shaderPath + "triangle.frag.spv").c_str(), device);
+	shaderStages[0].module = vks::tools::loadShader((shaderPath + "vertex.spv").c_str(), device);
+	shaderStages[1].module = vks::tools::loadShader((shaderPath + "fragment.spv").c_str(), device);
 
 	shaderModules = { shaderStages[0].module, shaderStages[1].module };
 	VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCreateInfo, nullptr, &pipeline));

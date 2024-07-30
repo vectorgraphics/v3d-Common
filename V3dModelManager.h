@@ -48,7 +48,7 @@ private:
     void refreshPixmap();
 
     std::vector<std::vector<V3dModel>> m_Models;
-    std::unique_ptr<HeadlessRenderer> m_HeadlessRenderer{ std::make_unique<HeadlessRenderer>("/home/benjaminb/kde/src/okular/generators/Okular-v3d-Plugin-Code/shaders/") };
+    std::unique_ptr<HeadlessRenderer> m_HeadlessRenderer{ std::make_unique<HeadlessRenderer>("/home/benjaminb/kde/src/okular/generators/Okular-v3d-Embeded-Plugin-Code/3rdParty/V3D-Common/shaders/") };
 
     bool m_MouseDown{ false };
 
