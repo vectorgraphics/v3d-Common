@@ -6,6 +6,7 @@
 #include <QBoxLayout>
 
 #include <area.h>
+#include <document.h>
 
 #include "Utility/EventFilter.h"
 #include "Utility/ProtectedFunctionCaller.h"
@@ -97,26 +98,66 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
         return true;
     }
 
+    const QVector<Okular::VisiblePageRect*> visiblePages = m_Document->visiblePageRects();
+
     for (size_t i = 0; i < m_Models.size(); ++i) {
-        int horizontalMargin = (m_PageView->width() - m_CachedRequestSizes[i].size.x) / 2;
-        int verticalMargin = (m_PageView->height() - m_CachedRequestSizes[i].size.y) / 2;
+        int pageNumber = (int)i;
 
-        bool horizontalyOnPage = m_MousePosition.x > horizontalMargin && m_MousePosition.x < horizontalMargin + m_CachedRequestSizes[i].size.x;
-        bool verticalyOnPage = m_MousePosition.y > verticalMargin && m_MousePosition.y < verticalMargin + m_CachedRequestSizes[i].size.y;
+        bool foundAPage = false;
+        Okular::VisiblePageRect* visiblePage = nullptr;
+        for (auto& page : visiblePages) {
+            if (page->pageNumber == i) {
+                foundAPage = true;
+                visiblePage = page;
+                break;
+            }
+        }
 
-        if (!(horizontalyOnPage && verticalyOnPage)) {
+        if (!foundAPage) {
             continue;
         }
 
-        glm::vec2 normalizedPositionOnPage = {
-            (float)(m_MousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[i].size.x,
-            (float)(m_MousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[i].size.y
-        };
+        Okular::NormalizedRect rect = visiblePage->rect;
 
-        glm::vec2 lastNormalizedPositionOnPage = {
-            (float)(m_LastMousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[i].size.x,
-            (float)(m_LastMousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[i].size.y
-        };
+        glm::vec2 normalizedPositionOnPage{ };
+        glm::vec2 lastNormalizedPositionOnPage{ };
+
+        if (rect.left == 0.0 && rect.right == 1.0 && rect.top == 0.0 && rect.bottom == 1.0) {
+            // The full page is visible
+            int horizontalMargin = (m_PageView->width() - m_CachedRequestSizes[i].size.x) / 2;
+            int verticalMargin = (m_PageView->height() - m_CachedRequestSizes[i].size.y) / 2;
+
+            bool horizontalyOnPage = m_MousePosition.x > horizontalMargin && m_MousePosition.x < horizontalMargin + m_CachedRequestSizes[i].size.x;
+            bool verticalyOnPage = m_MousePosition.y > verticalMargin && m_MousePosition.y < verticalMargin + m_CachedRequestSizes[i].size.y;
+
+            if (!(horizontalyOnPage && verticalyOnPage)) {
+                continue;
+            }
+
+            normalizedPositionOnPage = {
+                (float)(m_MousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[i].size.x,
+                (float)(m_MousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[i].size.y // TODO this assumes we are verticaly centerd
+            };
+
+            lastNormalizedPositionOnPage = {
+                (float)(m_LastMousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[i].size.x,
+                (float)(m_LastMousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[i].size.y
+            };
+        } else {
+            // Only a section of the page is visible
+            float leftPixel = (float)rect.left * (float)m_CachedRequestSizes[i].size.x;
+            float topPixel = (float)rect.top * (float)m_CachedRequestSizes[i].size.y;
+
+            normalizedPositionOnPage = {
+                (float)(m_MousePosition.x + leftPixel) / (float)m_CachedRequestSizes[i].size.x,
+                (float)(m_MousePosition.y + topPixel) / (float)m_CachedRequestSizes[i].size.y
+            };
+
+            lastNormalizedPositionOnPage = {
+                (float)(m_LastMousePosition.x + leftPixel) / (float)m_CachedRequestSizes[i].size.x,
+                (float)(m_LastMousePosition.y + topPixel) / (float)m_CachedRequestSizes[i].size.y
+            };
+        }
 
         for (auto& model : m_Models[i]) {
             glm::vec2 normalizedPositionOnModel = {
