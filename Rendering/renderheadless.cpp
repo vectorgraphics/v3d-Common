@@ -10,10 +10,43 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
-HeadlessRenderer::HeadlessRenderer(std::string shaderPath)
-	: shaderPath(shaderPath) { }
+#include <chrono>
 
-HeadlessRenderer::~HeadlessRenderer() { }
+#define VULKAN_DEBUG 1
+
+HeadlessRenderer::HeadlessRenderer(std::string shaderPath)
+	: shaderPath(shaderPath) { 
+		createInstance();
+		createPhysicalDevice();
+
+		VkDeviceQueueCreateInfo queueCreateInfo = requestGraphicsQueue();
+
+		createLogicalDevice(&queueCreateInfo);
+
+		vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
+
+		// Command pool
+		VkCommandPoolCreateInfo cmdPoolInfo = {};
+		cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		cmdPoolInfo.queueFamilyIndex = queueFamilyIndex;
+		cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+		VK_CHECK_RESULT(vkCreateCommandPool(device, &cmdPoolInfo, nullptr, &commandPool));
+	}
+
+HeadlessRenderer::~HeadlessRenderer() { 
+	vkDestroyCommandPool(device, commandPool, nullptr);
+	vkDestroyDevice(device, nullptr);
+
+#if VULKAN_DEBUG
+	if (debugReportCallback) {
+		PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallback = reinterpret_cast<PFN_vkDestroyDebugReportCallbackEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT"));
+		assert(vkDestroyDebugReportCallback);
+		vkDestroyDebugReportCallback(instance, debugReportCallback, nullptr);
+	}
+#endif
+
+	vkDestroyInstance(instance, nullptr);
+}
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugMessageCallback(
 	VkDebugReportFlagsEXT flags,
@@ -187,7 +220,6 @@ void HeadlessRenderer::createLogicalDevice(VkDeviceQueueCreateInfo* queueCreateI
 	deviceCreateInfo.enabledExtensionCount = (uint32_t)deviceExtensions.size();
 	deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.data();
 	VK_CHECK_RESULT(vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device));
-	// std::cout << "Device creation result: " << vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device) << std::endl;
 }
 
 void HeadlessRenderer::copyVertexDataToGPU(const std::vector<float>& vertices) {
@@ -507,7 +539,7 @@ void HeadlessRenderer::createGraphicsPipeline() {
 	VK_CHECK_RESULT(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCreateInfo, nullptr, &pipeline));
 }
 
-void HeadlessRenderer::recordCommandBuffer(int targetWidth, int targetHeight, size_t indexCount, const glm::mat4& mvp) {	
+void HeadlessRenderer::recordCommandBuffer(int targetWidth, int targetHeight, size_t indexCount, const glm::mat4& mvp) {
 	VkCommandBuffer commandBuffer;
 	VkCommandBufferAllocateInfo cmdBufAllocateInfo =
 		vks::initializers::commandBufferAllocateInfo(commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1);
@@ -557,9 +589,7 @@ void HeadlessRenderer::recordCommandBuffer(int targetWidth, int targetHeight, si
 	vkCmdDrawIndexed(commandBuffer, indexCount, 1, 0, 0, 0);
 
 	vkCmdEndRenderPass(commandBuffer);
-
 	VK_CHECK_RESULT(vkEndCommandBuffer(commandBuffer));
-
 	submitWork(commandBuffer, queue);
 
 	vkDeviceWaitIdle(device);
@@ -692,42 +722,13 @@ void HeadlessRenderer::cleanup() {
 	vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 	vkDestroyPipeline(device, pipeline, nullptr);
 	vkDestroyPipelineCache(device, pipelineCache, nullptr);
-	vkDestroyCommandPool(device, commandPool, nullptr);
 
 	for (auto shadermodule : shaderModules) {
 		vkDestroyShaderModule(device, shadermodule, nullptr);
 	}
-	vkDestroyDevice(device, nullptr);
-
-#if VULKAN_DEBUG
-	if (debugReportCallback) {
-		PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallback = reinterpret_cast<PFN_vkDestroyDebugReportCallbackEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT"));
-		assert(vkDestroyDebugReportCallback);
-		vkDestroyDebugReportCallback(instance, debugReportCallback, nullptr);
-	}
-#endif
-
-	vkDestroyInstance(instance, nullptr);
 }
 
 unsigned char* HeadlessRenderer::render(int targetWidth, int targetHeight, VkSubresourceLayout* imageSubresourceLayout, const std::vector<float>& vertices, const std::vector<unsigned int>& indices, const glm::mat4& mvp) {	
-	createInstance();
-	createPhysicalDevice();
-
-	VkDeviceQueueCreateInfo queueCreateInfo = requestGraphicsQueue();
-
-	createLogicalDevice(&queueCreateInfo);
-
-	// Get a graphics queue
-	vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
-
-	// Command pool
-	VkCommandPoolCreateInfo cmdPoolInfo = {};
-	cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-	cmdPoolInfo.queueFamilyIndex = queueFamilyIndex;
-	cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-	VK_CHECK_RESULT(vkCreateCommandPool(device, &cmdPoolInfo, nullptr, &commandPool));
-
 	copyVertexDataToGPU(vertices);
 	copyIndexDataToGPU(indices);
 

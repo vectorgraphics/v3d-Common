@@ -50,22 +50,16 @@ QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int wi
     std::vector<unsigned char> vectorData;
     vectorData.reserve(finalImageSize);
 
-    int x = 0;
-    unsigned int* oldRow;
-    bool done = false;
     for (int32_t y = 0; y < height; y++) {
         unsigned int *row = (unsigned int*)imgDatatmp;
-        for (int32_t x = 0; x < width; x++) {
-            unsigned char* charRow = (unsigned char*)row;
-            vectorData.push_back(charRow[2]);
-            vectorData.push_back(charRow[1]);
-            vectorData.push_back(charRow[0]);
-            vectorData.push_back(charRow[3]);
+        size_t rowBytes = width * 4;
+    
+        vectorData.resize(vectorData.size() + rowBytes);
+        std::memcpy(vectorData.data() + vectorData.size() - rowBytes, (unsigned char*)row, rowBytes);
 
-            row++;
-        }
         imgDatatmp += imageSubresourceLayout.rowPitch;
     }
+
     delete imageData;
 
     QImage image{ vectorData.data(), width, height, QImage::Format_ARGB32 };
