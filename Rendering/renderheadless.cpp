@@ -6,9 +6,9 @@
 * This code is licensed under the MIT license (MIT) (http://opensource.org/licenses/MIT)
 */
 
-#include <glm/gtc/matrix_transform.hpp>
-
 #include "renderheadless.h"
+
+#include <glm/gtc/matrix_transform.hpp>
 
 HeadlessRenderer::HeadlessRenderer(std::string shaderPath)
 	: shaderPath(shaderPath) { }

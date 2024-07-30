@@ -17,7 +17,7 @@ class EventFilter;
 
 class V3dModelManager {
 public:
-    V3dModelManager(const Okular::Document* document);
+    V3dModelManager(const Okular::Document* document, const std::string& shaderPath);
 
     void AddModel(V3dModel model, size_t pageNumber);
 
@@ -48,7 +48,8 @@ private:
     void refreshPixmap();
 
     std::vector<std::vector<V3dModel>> m_Models;
-    std::unique_ptr<HeadlessRenderer> m_HeadlessRenderer{ std::make_unique<HeadlessRenderer>("/home/benjaminb/kde/src/okular/generators/Okular-v3d-Embeded-Plugin-Code/3rdParty/V3D-Common/shaders/") };
+    
+    std::unique_ptr<HeadlessRenderer> m_HeadlessRenderer;
 
     bool m_MouseDown{ false };
 

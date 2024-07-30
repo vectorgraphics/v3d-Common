@@ -11,8 +11,9 @@
 #include "Utility/EventFilter.h"
 #include "Utility/ProtectedFunctionCaller.h"
 
-V3dModelManager::V3dModelManager(const Okular::Document* document) 
-    : m_Document(document) {
+V3dModelManager::V3dModelManager(const Okular::Document* document, const std::string& shaderPath) 
+    : m_Document(document)
+    , m_HeadlessRenderer(std::make_unique<HeadlessRenderer>(shaderPath)) {
     m_PageView = GetPageViewWidget();
 
     m_EventFilter = new EventFilter(m_PageView, this);
