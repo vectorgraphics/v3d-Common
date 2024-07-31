@@ -95,6 +95,8 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
 
     const QVector<Okular::VisiblePageRect*> visiblePages = m_Document->visiblePageRects();
 
+    bool shouldRefresh = false;
+
     for (size_t i = 0; i < m_Models.size(); ++i) {
         int pageNumber = (int)i;
 
@@ -174,6 +176,8 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
 
             glm::vec2 pageViewSize = { m_PageView->width(), m_PageView->height() };
 
+            shouldRefresh = true;
+
             switch (m_DragMode) {
                 case DragMode::SHIFT: {
                     model.dragModeShift(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
@@ -195,7 +199,9 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
         }
     }
 
-    requestPixmapRefresh();
+    if (shouldRefresh) {
+        requestPixmapRefresh();
+    }
 
     m_LastMousePosition.x = m_MousePosition.x;
     m_LastMousePosition.y = m_MousePosition.y;
