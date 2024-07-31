@@ -97,6 +97,6 @@ public:
 
 	VkResult createBuffer(VkBufferUsageFlags usageFlags, VkMemoryPropertyFlags memoryPropertyFlags, VkBuffer *buffer, VkDeviceMemory *memory, VkDeviceSize size, void *data = nullptr);
     
-    //Submit command buffer to a queue and wait for fence until queue operations have been finished
+    // Submit command buffer to a queue and wait for fence until queue operations have been finished
 	void submitWork(VkCommandBuffer cmdBuffer, VkQueue queue);
 };

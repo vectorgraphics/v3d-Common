@@ -574,6 +574,7 @@ void HeadlessRenderer::recordCommandBuffer(int targetWidth, int targetHeight, si
 
 	// Update dynamic scissor state
 	VkRect2D scissor = {};
+	scissor.offset = { 0, 0 };
 	scissor.extent.width = targetWidth;
 	scissor.extent.height = targetHeight;
 	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
