@@ -11,3 +11,10 @@ void ProtectedFunctionCaller::callMouseReleaseEvent(QAbstractScrollArea* obj, QM
 
     (obj->*funcPtr)(event);
 }
+
+void ProtectedFunctionCaller::callMousePressEvent(QAbstractScrollArea* obj, QMouseEvent* event) {
+    void (QAbstractScrollArea::*funcPtr)(QMouseEvent*) = &ProtectedFunctionCaller::mousePressEvent;
+
+    (obj->*funcPtr)(event);
+}
+

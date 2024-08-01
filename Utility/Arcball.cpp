@@ -6,7 +6,7 @@ Arcball::Arcball(const glm::vec2& lastMousePosition, const glm::vec2& mousePosit
     glm::vec3 v0 = norm(lastMousePosition);
     glm::vec3 v1 = norm(mousePosition);
     float Dot = glm::dot(v0, v1);
-    angle = Dot > 1.0f ? 0.0f : (Dot < -1.0f ? glm::pi<float>() : std::acos(Dot));
+    angle = Dot > 1.0f ? 0.0f : Dot < -1.0f ? glm::pi<float>() : std::acos(Dot);
 
     axis = glm::normalize(glm::cross(v0, v1));
 }

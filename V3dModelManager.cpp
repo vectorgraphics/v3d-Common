@@ -93,9 +93,126 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
         return true;
     }
 
+    bool shouldRefresh = false;
+
+    if (m_ActiveModel == nullptr) {
+        return true;
+    }
+
     const QVector<Okular::VisiblePageRect*> visiblePages = m_Document->visiblePageRects();
 
-    bool shouldRefresh = false;
+    int pageNumber = m_ActiveModelInfo.x;
+
+    bool foundAPage = false;
+    Okular::VisiblePageRect* visiblePage = nullptr;
+    for (auto& page : visiblePages) {
+        if (page->pageNumber == pageNumber) {
+            foundAPage = true;
+            visiblePage = page;
+            break;
+        }
+    }
+
+    if (!foundAPage) {
+        return true;
+    }
+
+    Okular::NormalizedRect rect = visiblePage->rect;
+
+    glm::vec2 normalizedPositionOnPage{ };
+    glm::vec2 lastNormalizedPositionOnPage{ };
+
+    if (rect.left == 0.0 && rect.right == 1.0 && rect.top == 0.0 && rect.bottom == 1.0) {
+        // The full page is visible
+        int horizontalMargin = (m_PageView->width() - m_CachedRequestSizes[pageNumber].size.x) / 2;
+        int verticalMargin = (m_PageView->height() - m_CachedRequestSizes[pageNumber].size.y) / 2;
+
+        bool horizontalyOnPage = m_MousePosition.x > horizontalMargin && m_MousePosition.x < horizontalMargin + m_CachedRequestSizes[pageNumber].size.x;
+        bool verticalyOnPage = m_MousePosition.y > verticalMargin && m_MousePosition.y < verticalMargin + m_CachedRequestSizes[pageNumber].size.y;
+
+        normalizedPositionOnPage = {
+            (float)(m_MousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[pageNumber].size.x,
+            (float)(m_MousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[pageNumber].size.y // TODO this assumes we are verticaly centerd
+        };
+
+        lastNormalizedPositionOnPage = {
+            (float)(m_LastMousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[pageNumber].size.x,
+            (float)(m_LastMousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[pageNumber].size.y
+        };
+    } else { // TODO Need to do a check for wether we are on the page or not
+        // Only a section of the page is visible
+        float leftPixel = (float)rect.left * (float)m_CachedRequestSizes[pageNumber].size.x;
+        float topPixel = (float)rect.top * (float)m_CachedRequestSizes[pageNumber].size.y;
+
+        normalizedPositionOnPage = {
+            (float)(m_MousePosition.x + leftPixel) / (float)m_CachedRequestSizes[pageNumber].size.x,
+            (float)(m_MousePosition.y + topPixel) / (float)m_CachedRequestSizes[pageNumber].size.y
+        };
+
+        lastNormalizedPositionOnPage = {
+            (float)(m_LastMousePosition.x + leftPixel) / (float)m_CachedRequestSizes[pageNumber].size.x,
+            (float)(m_LastMousePosition.y + topPixel) / (float)m_CachedRequestSizes[pageNumber].size.y
+        };
+    }
+    
+    V3dModel& model = *m_ActiveModel;
+
+    glm::vec2 normalizedPositionOnModel = {
+        (normalizedPositionOnPage.x - model.minBound.x) / (model.maxBound.x - model.minBound.x),
+        (normalizedPositionOnPage.y - model.minBound.y) / (model.maxBound.y - model.minBound.y)
+    };
+
+    glm::vec2 lastNormalizedPositionOnModel = {
+        (lastNormalizedPositionOnPage.x - model.minBound.x) / (model.maxBound.x - model.minBound.x),
+        (lastNormalizedPositionOnPage.y - model.minBound.y) / (model.maxBound.y - model.minBound.y)
+    };
+
+    bool horizontalyOnModel = normalizedPositionOnPage.x > model.minBound.x && normalizedPositionOnPage.x < model.maxBound.x;
+    bool verticalyOnModel = normalizedPositionOnPage.y > model.minBound.y && normalizedPositionOnPage.y < model.maxBound.y;
+
+    glm::vec2 pageViewSize = { m_PageView->width(), m_PageView->height() };
+
+    shouldRefresh = true;
+
+    switch (m_DragMode) {
+        case DragMode::SHIFT: {
+            model.dragModeShift(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
+            break;
+        }
+        case DragMode::ZOOM: {
+            model.dragModeZoom(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
+            break;
+        }
+        case DragMode::PAN: {
+            model.dragModePan(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
+            break;
+        }
+        case DragMode::ROTATE: {
+            model.dragModeRotate(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
+            break;
+        }
+    }
+
+    if (shouldRefresh) {
+        requestPixmapRefresh();
+    }
+
+    m_LastMousePosition.x = m_MousePosition.x;
+    m_LastMousePosition.y = m_MousePosition.y;
+
+    return true;
+}
+
+bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
+    if (!(event->button() & Qt::MouseButton::LeftButton)) {
+        return false;
+    }
+
+    if (m_MouseDown != false) {
+       return true;
+    }
+
+    const QVector<Okular::VisiblePageRect*> visiblePages = m_Document->visiblePageRects();
 
     for (size_t i = 0; i < m_Models.size(); ++i) {
         int pageNumber = (int)i;
@@ -140,7 +257,7 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
                 (float)(m_LastMousePosition.x - horizontalMargin) / (float)m_CachedRequestSizes[i].size.x,
                 (float)(m_LastMousePosition.y - verticalMargin) / (float)m_CachedRequestSizes[i].size.y
             };
-        } else {
+        } else {// TODO Need to do a check for wether we are on the page or not
             // Only a section of the page is visible
             float leftPixel = (float)rect.left * (float)m_CachedRequestSizes[i].size.x;
             float topPixel = (float)rect.top * (float)m_CachedRequestSizes[i].size.y;
@@ -156,6 +273,7 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
             };
         }
 
+        int modelIndex = 0;
         for (auto& model : m_Models[i]) {
             glm::vec2 normalizedPositionOnModel = {
                 (normalizedPositionOnPage.x - model.minBound.x) / (model.maxBound.x - model.minBound.x),
@@ -174,44 +292,12 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
                 continue;
             }
 
-            glm::vec2 pageViewSize = { m_PageView->width(), m_PageView->height() };
+            m_ActiveModel = &model;
+            m_ActiveModelInfo = glm::ivec2{ pageNumber, modelIndex };
+            break;
 
-            shouldRefresh = true;
-
-            switch (m_DragMode) {
-                case DragMode::SHIFT: {
-                    model.dragModeShift(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
-                    break;
-                }
-                case DragMode::ZOOM: {
-                    model.dragModeZoom(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
-                    break;
-                }
-                case DragMode::PAN: {
-                    model.dragModePan(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
-                    break;
-                }
-                case DragMode::ROTATE: {
-                    model.dragModeRotate(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
-                    break;
-                }
-            }
+            ++modelIndex;
         }
-    }
-
-    if (shouldRefresh) {
-        requestPixmapRefresh();
-    }
-
-    m_LastMousePosition.x = m_MousePosition.x;
-    m_LastMousePosition.y = m_MousePosition.y;
-
-    return true;
-}
-
-bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
-    if (m_MouseDown != false) {
-        return true;
     }
 
     m_LastMousePosition.x = m_MousePosition.x;
@@ -237,9 +323,16 @@ bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
 }
 
 bool V3dModelManager::mouseButtonReleaseEvent(QMouseEvent* event) {
+    if (!(event->button() & Qt::MouseButton::LeftButton)) {
+        return false;
+    }
+
     if (m_MouseDown != true) {
         return true;
     }
+
+    m_ActiveModel = nullptr;
+    m_ActiveModelInfo = glm::ivec2{ -1, -1 };
 
     m_MouseDown = false;
 
@@ -351,6 +444,15 @@ void V3dModelManager::refreshPixmap() {
         shouldZoomIn = true;
     }
 
+    QMouseEvent* pressEvent = new QMouseEvent(
+        QEvent::MouseButtonPress, // type
+        QPointF{ },                 // localPos
+        QPointF{ },                 // globalPos
+        Qt::MiddleButton,           // button
+        0,                          // buttons
+        Qt::NoModifier              // modifiers
+    );
+
     QWheelEvent* wheelEvent = new QWheelEvent(
         QPointF{},            // pos
         QPointF{},            // globalPos
@@ -362,15 +464,16 @@ void V3dModelManager::refreshPixmap() {
         false                 // inverted
     );
 
-    QMouseEvent* mouseEvent = new QMouseEvent(
-        QEvent::MouseButtonRelease,     // type
-        QPointF{ },                     // localPos
-        QPointF{ },                     // globalPos
-        Qt::MiddleButton,               // button
-        0,                              // buttons
-        Qt::NoModifier                  // modifiers
+    QMouseEvent* releaseEvent = new QMouseEvent(
+        QEvent::MouseButtonRelease, // type
+        QPointF{ },                 // localPos
+        QPointF{ },                 // globalPos
+        Qt::MiddleButton,           // button
+        0,                          // buttons
+        Qt::NoModifier              // modifiers
     );
 
+    ProtectedFunctionCaller::callMousePressEvent(m_PageView, pressEvent);
     ProtectedFunctionCaller::callWheelEvent(m_PageView, wheelEvent);
-    ProtectedFunctionCaller::callMouseReleaseEvent(m_PageView, mouseEvent);
+    ProtectedFunctionCaller::callMouseReleaseEvent(m_PageView, releaseEvent);
 }

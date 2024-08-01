@@ -74,4 +74,7 @@ private:
     };
 
     std::vector<RequestCache> m_CachedRequestSizes;
+
+    V3dModel* m_ActiveModel;
+    glm::ivec2 m_ActiveModelInfo;
 };
