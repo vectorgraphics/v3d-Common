@@ -35,10 +35,12 @@ public:
     bool mouseButtonPressEvent(QMouseEvent* event);
     bool mouseButtonReleaseEvent(QMouseEvent* event);
 
+    void CacheRequest(Okular::PixmapRequest* request);
+
+private:
     void CacheRequestSize(size_t pageNumber, int width, int height, int priority);
     void CachePage(size_t pageNumber, Okular::Page* page);
 
-private:
     const Okular::Document* m_Document;
 
     QAbstractScrollArea* GetPageViewWidget();

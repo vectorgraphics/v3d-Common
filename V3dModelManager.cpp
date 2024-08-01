@@ -7,6 +7,7 @@
 
 #include <area.h>
 #include <document.h>
+#include <generator.h>
 
 #include "Utility/EventFilter.h"
 #include "Utility/ProtectedFunctionCaller.h"
@@ -349,6 +350,13 @@ bool V3dModelManager::mouseButtonReleaseEvent(QMouseEvent* event) {
     m_MouseDown = false;
 
     return true;
+}
+
+void V3dModelManager::CacheRequest(Okular::PixmapRequest* request) {
+    Okular::Page* page = request->page();
+
+    CacheRequestSize(page->number(), request->width(), request->height(), request->priority());
+    CachePage(page->number(), page);
 }
 
 void V3dModelManager::CacheRequestSize(size_t pageNumber, int width, int height, int priority) {
