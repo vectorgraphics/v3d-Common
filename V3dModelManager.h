@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QtGui/QMouseEvent>
 #include <QAbstractScrollArea>
+#include <page.h>
 
 #include <document.h>
 
@@ -35,20 +36,22 @@ public:
     bool mouseButtonReleaseEvent(QMouseEvent* event);
 
     void CacheRequestSize(size_t pageNumber, int width, int height, int priority);
+    void CachePage(size_t pageNumber, Okular::Page* page);
 
 private:
     const Okular::Document* m_Document;
 
     QAbstractScrollArea* GetPageViewWidget();
 
-    std::chrono::duration<double> m_MinTimeBetweenRefreshes{ 1.0 / 100.0 }; // In Seconds
+    std::chrono::duration<double> m_MinTimeBetweenRefreshes{ 1.0 / 60.0 }; // In Seconds
     std::chrono::time_point<std::chrono::system_clock> m_LastPixmapRefreshTime;
 
     void requestPixmapRefresh();
     void refreshPixmap();
 
     std::vector<std::vector<V3dModel>> m_Models;
-    
+    std::vector<std::vector<QImage>> m_ModelImages;
+
     std::unique_ptr<HeadlessRenderer> m_HeadlessRenderer;
 
     bool m_MouseDown{ false };
@@ -74,6 +77,7 @@ private:
     };
 
     std::vector<RequestCache> m_CachedRequestSizes;
+    std::vector<Okular::Page*> m_Pages;
 
     V3dModel* m_ActiveModel;
     glm::ivec2 m_ActiveModelInfo;

@@ -7,7 +7,11 @@
 
 #include "V3dFile/V3dFile.h"
 
+class V3dModelManager;
+
 struct V3dModel {
+    friend class V3dModelManager;
+
     V3dModel(const std::string& filePath, const glm::vec2& minBound = { 0.0f, 0.0f }, const glm::vec2& maxBound = { 1.0f, 1.0f });
     V3dModel(xdr::memixstream& xdrFile, const glm::vec2& minBound = { 0.0f, 0.0f }, const glm::vec2& maxBound = { 1.0f, 1.0f });
     V3dModel(const V3dModel& other) = default;
@@ -50,4 +54,7 @@ struct V3dModel {
     } viewParam;
 
     std::unique_ptr<V3dFile> file{ };
+
+private:
+    bool m_HasChanged{ true };
 };

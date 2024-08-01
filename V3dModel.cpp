@@ -78,6 +78,7 @@ void V3dModel::updateViewMatrix() {
     viewMatrix = temp * viewMatrix;
 
     viewMatrix = glm::translate(viewMatrix, { center.x, center.y, 0.0f });
+    m_HasChanged = true;
 }
 
 void V3dModel::dragModeShift(const glm::vec2& normalizedMousePosition, const glm::vec2& lastNormalizedMousePosition, const glm::vec2& pageViewSize) {
@@ -101,6 +102,8 @@ void V3dModel::dragModeZoom(const glm::vec2& normalizedMousePosition, const glm:
         } else if (zoom >= maxZoom) {
             zoom = maxZoom;
         }
+
+        m_HasChanged = true;
     }
 }
 
@@ -120,4 +123,6 @@ void V3dModel::dragModeRotate(const glm::vec2& normalizedMousePosition, const gl
     float angleRadians = 2.0f * angle / zoom * arcballFactor;
     glm::mat4 temp = glm::rotate(glm::mat4(1.0f), angleRadians, axis);
     rotationMatrix = temp * rotationMatrix;
+
+    m_HasChanged = true;
 }

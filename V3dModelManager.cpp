@@ -25,9 +25,18 @@ void V3dModelManager::AddModel(V3dModel model, size_t pageNumber) {
     m_Models[pageNumber].emplace_back(std::move(model));
 
     m_Models[pageNumber].back().initProjection();
+
+    m_ModelImages.resize(pageNumber + 1);
+    m_ModelImages[pageNumber].push_back(QImage{ });
 }
 
 QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int width, int height) {
+    if (!m_Models[pageNumber][modelIndex].m_HasChanged && 
+        m_ModelImages[pageNumber][modelIndex].width() == width && 
+        m_ModelImages[pageNumber][modelIndex].height() == height) {
+        return m_ModelImages[pageNumber][modelIndex];
+    }
+
     std::vector<float> vertices = m_Models[pageNumber][modelIndex].file->vertices;
     std::vector<unsigned int> indices = m_Models[pageNumber][modelIndex].file->indices;
 
@@ -65,6 +74,9 @@ QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int wi
     QImage image{ vectorData.data(), width, height, QImage::Format_ARGB32 };
 
     image = image.mirrored(false, true);
+
+    m_Models[pageNumber][modelIndex].m_HasChanged = false;
+    m_ModelImages[pageNumber][modelIndex] = image;
 
     return image;
 }
@@ -347,6 +359,16 @@ void V3dModelManager::CacheRequestSize(size_t pageNumber, int width, int height,
     }
 }
 
+void V3dModelManager::CachePage(size_t pageNumber, Okular::Page* page) {
+    if (page == nullptr) {
+        return;
+    }
+
+    m_Pages.resize(pageNumber + 1);
+
+    m_Pages[pageNumber] = page;
+}
+
 QAbstractScrollArea* V3dModelManager::GetPageViewWidget() {
     QAbstractScrollArea* pageView = nullptr;
 
@@ -433,47 +455,17 @@ void V3dModelManager::requestPixmapRefresh() {
 }
 
 void V3dModelManager::refreshPixmap() {
-    static bool shouldZoomIn = true;
-
-    int zoom = 0;
-    if (shouldZoomIn) {
-        zoom = 1;
-        shouldZoomIn = false;
-    } else {
-        zoom = -1;
-        shouldZoomIn = true;
+    for (auto page : m_Pages) { // TODO this dosent need to be called for all pages, it can probably just be called for the page the active model is on
+        if (page) {
+            page->deletePixmaps();
+        }
     }
 
-    QMouseEvent* pressEvent = new QMouseEvent(
-        QEvent::MouseButtonPress, // type
-        QPointF{ },                 // localPos
-        QPointF{ },                 // globalPos
-        Qt::MiddleButton,           // button
-        0,                          // buttons
-        Qt::NoModifier              // modifiers
+    QKeyEvent* keyEvent = new QKeyEvent(
+        QEvent::KeyRelease, // type
+        Qt::Key_Control,    // key
+        Qt::NoModifier      // modifiers
     );
 
-    QWheelEvent* wheelEvent = new QWheelEvent(
-        QPointF{},            // pos
-        QPointF{},            // globalPos
-        QPoint{},             // pixelDelta
-        QPoint{ zoom, zoom }, // angleDelta
-        0,                    // buttons
-        Qt::ControlModifier,  // modifiers
-        Qt::NoScrollPhase,    // phase
-        false                 // inverted
-    );
-
-    QMouseEvent* releaseEvent = new QMouseEvent(
-        QEvent::MouseButtonRelease, // type
-        QPointF{ },                 // localPos
-        QPointF{ },                 // globalPos
-        Qt::MiddleButton,           // button
-        0,                          // buttons
-        Qt::NoModifier              // modifiers
-    );
-
-    ProtectedFunctionCaller::callMousePressEvent(m_PageView, pressEvent);
-    ProtectedFunctionCaller::callWheelEvent(m_PageView, wheelEvent);
-    ProtectedFunctionCaller::callMouseReleaseEvent(m_PageView, releaseEvent);
+    ProtectedFunctionCaller::callKeyReleaseEvent(m_PageView, keyEvent);
 }

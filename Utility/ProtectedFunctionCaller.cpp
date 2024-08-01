@@ -1,20 +1,7 @@
 #include "ProtectedFunctionCaller.h"
 
-void ProtectedFunctionCaller::callWheelEvent(QAbstractScrollArea* obj, QWheelEvent* event) {
-    void (QAbstractScrollArea::*funcPtr)(QWheelEvent*) = &ProtectedFunctionCaller::wheelEvent;
+void ProtectedFunctionCaller::callKeyReleaseEvent(QAbstractScrollArea* obj, QKeyEvent* event) {
+    void (QAbstractScrollArea::*funcPtr)(QKeyEvent*) = &ProtectedFunctionCaller::keyReleaseEvent;
 
     (obj->*funcPtr)(event);
 }
-
-void ProtectedFunctionCaller::callMouseReleaseEvent(QAbstractScrollArea* obj, QMouseEvent* event) {
-    void (QAbstractScrollArea::*funcPtr)(QMouseEvent*) = &ProtectedFunctionCaller::mouseReleaseEvent;
-
-    (obj->*funcPtr)(event);
-}
-
-void ProtectedFunctionCaller::callMousePressEvent(QAbstractScrollArea* obj, QMouseEvent* event) {
-    void (QAbstractScrollArea::*funcPtr)(QMouseEvent*) = &ProtectedFunctionCaller::mousePressEvent;
-
-    (obj->*funcPtr)(event);
-}
-
