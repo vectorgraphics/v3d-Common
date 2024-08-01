@@ -10,9 +10,9 @@
 
     m_ModelManager.AddModel(V3dModel{ fileName.toStdString() }, 0);
     ```
-3. In the `generatPixmap` function of you generator, cache the size of the request, than call the Render function and present the QImage to the page however you want to:
+3. In the `generatePixmap` function of you generator, cache the request, than call the Render function and present the QImage to the page however you want to:
     ```    
-    m_ModelManager.CacheRequestSize(request->page()->number(), request->width(), request->height(), request->priority());
+    m_ModelManager.CacheRequest(request);
 
     QImage image = m_ModelManager.RenderModel(0, 0, (int)request->width(), (int)request->height());
     ```
