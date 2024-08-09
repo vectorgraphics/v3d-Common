@@ -26,6 +26,7 @@ public:
 
     V3dModel& Model(size_t pageNumber, size_t modelIndex);
     std::vector<V3dModel>& Models(size_t pageNumber);
+    bool Empty();
 
     glm::vec2 GetPageSize(size_t pageNumber);
 
@@ -41,6 +42,21 @@ private:
     void CacheRequestSize(size_t pageNumber, int width, int height, int priority);
     void CachePage(size_t pageNumber, Okular::Page* page);
 
+    struct NormalizedMousePosition {
+        glm::vec2 currentPosition;
+        glm::vec2 lastPosition;
+
+        int pageNumber;
+    };
+    
+    // Gets the normalized mouse position with respect to the page provided by pageReference, or if the pageReference is
+    // set to -1, than with respect to whatever page the mouse is currently over, in a one page document it will always be
+    // with respect to the only page.
+
+    // PageNumber will be set to -1 if the mouse is not over the pageReference, or if its not over a page at all, 
+    // and otherwise will be set to the page the mouse is over top of.
+    NormalizedMousePosition GetNormalizedMousePosition(int pageReference = -1);
+
     const Okular::Document* m_Document;
 
     QAbstractScrollArea* GetPageViewWidget();
@@ -48,8 +64,8 @@ private:
     std::chrono::duration<double> m_MinTimeBetweenRefreshes{ 1.0 / 60.0 }; // In Seconds
     std::chrono::time_point<std::chrono::system_clock> m_LastPixmapRefreshTime;
 
-    void requestPixmapRefresh();
-    void refreshPixmap();
+    void requestPixmapRefresh(size_t pageNumber);
+    void refreshPixmap(size_t pageNumber);
 
     std::vector<std::vector<V3dModel>> m_Models;
     std::vector<std::vector<QImage>> m_ModelImages;

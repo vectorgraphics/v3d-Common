@@ -1,4 +1,4 @@
-## A common set of files used to support V3D files inside of Okular Plugins.
+### A common set of files used to support V3D files inside of Okular Plugins.
 
 # To use the plugin:
 1. Add an instance of `V3dModelManager` as a member of your generator
@@ -16,3 +16,25 @@
 
     QImage image = m_ModelManager.RenderModel(0, 0, (int)request->width(), (int)request->height());
     ```
+
+## TODO
+* multi page documents - Basics are done, still need to do:
+    * in the short term im assuming all pages in a document are the same size, fix this
+    * the 12 pixel margin may change depending on resolution, 2k vs 4k vs 1080p
+* Okular zoom optimization
+* gimbal lock only appears to happen when the mouse moves off of the model on the right or top sides. Look into passing different values to the “pageview” parameter of the drag/shift/rotate functions of the model
+* shader paths change when an external user uses the plugin
+* Switch over to precision system built into xstream, instead of custom one
+* New renderer
+* Clean up includes
+* Clean up CMAKE files
+* Look into adding a tile manager to the generator
+* panning and shifting
+* make the index and vertex buffers once, than cache them, currently they are recreated every time we rerender
+* documentation
+
+## BUGS
+* gamma3 still doesn’t work
+* zooming in and out a lot can still cause a DEVICE OUT OF MEMORY vulkan error
+* if all pages in a non model document are visible, and you drag the mouse it crashes
+* Opening multiple documents causes a crash
