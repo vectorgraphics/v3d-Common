@@ -308,19 +308,28 @@ V3dModelManager::NormalizedMousePosition V3dModelManager::GetNormalizedMousePosi
 
         } else {
             // Only a section of the page is visible
-            float leftPixel = (float)rect.left * (float)m_CachedRequestSizes[pageNumber].size.x;
-            float topPixel = (float)rect.top * (float)m_CachedRequestSizes[pageNumber].size.y;
+
+            float leftPixel = 0.0;
+            if (rect.left == 0.0 && rect.right == 1.0) {
+                // Page is fully visible horizontally
+                int horizontalMargin = (m_PageView->width() - m_CachedRequestSizes[pageNumber].size.x) / 2;
+                leftPixel = horizontalMargin;
+            } else {
+                leftPixel = -(float)rect.left * (float)m_CachedRequestSizes[pageNumber].size.x;
+            }
+
+            float topPixel = -(float)rect.top * (float)m_CachedRequestSizes[pageNumber].size.y;
 
             normalizedMousePosition.pageNumber = 0;
 
             normalizedMousePosition.currentPosition = {
-                (float)(m_MousePosition.x + leftPixel) / (float)m_CachedRequestSizes[pageNumber].size.x,
-                (float)(m_MousePosition.y + topPixel) / (float)m_CachedRequestSizes[pageNumber].size.y
+                (float)(m_MousePosition.x - leftPixel) / (float)m_CachedRequestSizes[pageNumber].size.x,
+                (float)(m_MousePosition.y - topPixel) / (float)m_CachedRequestSizes[pageNumber].size.y
             };
 
             normalizedMousePosition.lastPosition = {
-                (float)(m_LastMousePosition.x + leftPixel) / (float)m_CachedRequestSizes[pageNumber].size.x,
-                (float)(m_LastMousePosition.y + topPixel) / (float)m_CachedRequestSizes[pageNumber].size.y
+                (float)(m_LastMousePosition.x - leftPixel) / (float)m_CachedRequestSizes[pageNumber].size.x,
+                (float)(m_LastMousePosition.y - topPixel) / (float)m_CachedRequestSizes[pageNumber].size.y
             };
         }
 
