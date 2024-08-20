@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QBoxLayout>
 #include <QScrollBar>
+#include <QPainter>
 
 #include <area.h>
 #include <document.h>
@@ -17,6 +18,7 @@
 V3dModelManager::V3dModelManager(const Okular::Document* document, const std::string& shaderPath) 
     : m_Document(document)
     , m_HeadlessRenderer(std::make_unique<HeadlessRenderer>(shaderPath)) {
+
     m_PageView = GetPageViewWidget();
 
     m_EventFilter = new EventFilter(m_PageView, this);
@@ -125,6 +127,21 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
     glm::vec2 lastNormalizedPositionOnPage = normalizedMousePos.lastPosition;
 
     V3dModel& model = *m_ActiveModel;
+
+#ifdef MOUSE_BOUNDARIES
+    int leftPixel = model.minBound.x * m_CachedRequestSizes[normalizedMousePos.pageNumber].size.x;
+    int rightPixel = leftPixel + (model.maxBound.x - model.minBound.x) * m_CachedRequestSizes[normalizedMousePos.pageNumber].size.x;
+
+    int topPixel = model.minBound.y * m_CachedRequestSizes[normalizedMousePos.pageNumber].size.y;
+    int bottomPixel = topPixel + (model.maxBound.y - model.minBound.y) * m_CachedRequestSizes[normalizedMousePos.pageNumber].size.y;
+
+    if (m_ActiveModelInfo.x >= 0) {
+        m_MouseBoundaryLines[m_ActiveModelInfo.x].push_back(Line{ glm::vec2{ leftPixel, topPixel }, glm::vec2{ rightPixel, topPixel } });
+        m_MouseBoundaryLines[m_ActiveModelInfo.x].push_back(Line{ glm::vec2{ leftPixel, topPixel }, glm::vec2{ leftPixel, bottomPixel } });
+        m_MouseBoundaryLines[m_ActiveModelInfo.x].push_back(Line{ glm::vec2{ rightPixel, topPixel }, glm::vec2{ rightPixel, bottomPixel } });
+        m_MouseBoundaryLines[m_ActiveModelInfo.x].push_back(Line{ glm::vec2{ leftPixel, bottomPixel }, glm::vec2{ rightPixel, bottomPixel } });
+    }
+#endif
 
     glm::vec2 normalizedPositionOnModel = {
         (normalizedPositionOnPage.x - model.minBound.x) / (model.maxBound.x - model.minBound.x),
@@ -236,11 +253,56 @@ bool V3dModelManager::mouseButtonReleaseEvent(QMouseEvent* event) {
     return true;
 }
 
+void V3dModelManager::DrawMouseBoundaries(QImage* img, size_t pageNumber) {
+#ifdef MOUSE_BOUNDARIES
+
+    if (img == nullptr) {
+        return;
+    }
+
+    QPainter painter{ img };
+
+    if (m_MouseBoundaryLines.size() > pageNumber) {
+
+        for (auto line : m_MouseBoundaryLines[pageNumber]) {
+            painter.setPen(line.color);
+            painter.setBrush(line.color);
+
+            painter.drawLine((int)line.start.x, (int)line.start.y, (int)line.end.x, (int)line.end.y);
+        }
+
+        m_MouseBoundaryLines[pageNumber].clear();
+    }
+
+    if (m_MouseBoundaryPoints.size() > pageNumber) {
+        
+        constexpr int pointRadius = 5;
+
+        for (auto point : m_MouseBoundaryPoints[pageNumber]) {
+            painter.setPen(point.color);
+            painter.setBrush(point.color);
+
+            painter.drawEllipse(point.pos.x - pointRadius, point.pos.y - pointRadius, 2 * pointRadius, 2 * pointRadius);
+        }
+
+        m_MouseBoundaryPoints[pageNumber].clear();
+    }
+
+#endif
+}
+
 void V3dModelManager::CacheRequest(Okular::PixmapRequest* request) {
     Okular::Page* page = request->page();
 
     CacheRequestSize(page->number(), request->width(), request->height(), request->priority());
     CachePage(page->number(), page);
+
+#ifdef MOUSE_BOUNDARIES
+    if (m_MouseBoundaryLines.size() < page->number() + 1) {
+        m_MouseBoundaryLines.resize(page->number() + 1);
+        m_MouseBoundaryPoints.resize(page->number() + 1);
+    }
+#endif MOUSE_BOUNDARIES
 }
 
 void V3dModelManager::CacheRequestSize(size_t pageNumber, int width, int height, int priority) {
@@ -654,6 +716,12 @@ V3dModelManager::NormalizedMousePosition V3dModelManager::GetNormalizedMousePosi
             }
         }
     }
+
+#ifdef MOUSE_BOUNDARIES
+    if (pageReference != -1) {
+        m_MouseBoundaryPoints[pageReference].push_back(Point{ normalizedMousePosition.currentPosition * glm::vec2{ (float)m_CachedRequestSizes[pageReference].size.x, (float)m_CachedRequestSizes[pageReference].size.y } });
+    }
+#endif MOUSE_BOUNDARIES
 
     return normalizedMousePosition;
 }

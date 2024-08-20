@@ -2,6 +2,7 @@
 
 #include <qcoreevent.h>
 #include <qevent.h>
+#include <QPainter>
 
 #include "V3dModelManager.h"
 
@@ -33,7 +34,7 @@ bool EventFilter::eventFilter(QObject *object, QEvent *event) {
         if (mouseRelease != nullptr) {
             return modelManager->mouseButtonReleaseEvent(mouseRelease);
         }
-    }
+    } 
 
     return false;
 }

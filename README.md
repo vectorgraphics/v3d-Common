@@ -32,6 +32,7 @@
 * panning and shifting
 * make the index and vertex buffers once, than cache them, currently they are recreated every time we rerender
 * documentation
+* Presentation Mode dosent work at all
 
 ## BUGS
 * gamma3 still doesn’t work

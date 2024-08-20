@@ -8,16 +8,21 @@
 #include <QtGui/QMouseEvent>
 #include <QAbstractScrollArea>
 #include <page.h>
+#include <QPainter>
 
 #include <document.h>
 
 #include "V3dModel.h"
 #include "Rendering/renderheadless.h"
 
+//#define MOUSE_BOUNDARIES
+
 class EventFilter;
 
 class V3dModelManager {
 public:
+    friend class EventFilter;
+
     V3dModelManager(const Okular::Document* document, const std::string& shaderPath);
 
     void AddModel(V3dModel model, size_t pageNumber);
@@ -36,11 +41,30 @@ public:
     bool mouseButtonPressEvent(QMouseEvent* event);
     bool mouseButtonReleaseEvent(QMouseEvent* event);
 
+    void DrawMouseBoundaries(QImage* img, size_t pageNumber);
+
     void CacheRequest(Okular::PixmapRequest* request);
 
 private:
     void CacheRequestSize(size_t pageNumber, int width, int height, int priority);
     void CachePage(size_t pageNumber, Okular::Page* page);
+
+#ifdef MOUSE_BOUNDARIES
+    struct Line {
+        glm::vec2 start;
+        glm::vec2 end;
+        QColor color{ Qt::red };
+    };
+
+    struct Point {
+        glm::vec2 pos;
+        QColor color{ Qt::red };
+    };
+
+    std::vector<std::vector<Line>> m_MouseBoundaryLines;
+    std::vector<std::vector<Point>> m_MouseBoundaryPoints;
+
+#endif
 
     struct NormalizedMousePosition {
         glm::vec2 currentPosition;
