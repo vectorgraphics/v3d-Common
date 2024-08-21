@@ -107,6 +107,10 @@ void V3dModelManager::SetDocument(const Okular::Document* document) {
 }
 
 bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
+    if (m_Models.size() == 0) { // No models
+        return false;
+    }
+
     m_MousePosition.x = event->x();
     m_MousePosition.y = event->y();
 
@@ -180,6 +184,10 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
 }
 
 bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
+    if (m_Models.size() == 0) { // No models
+        return false;
+    }
+
     if (!(event->button() & Qt::MouseButton::LeftButton)) {
         return false;
     }
