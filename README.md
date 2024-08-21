@@ -35,5 +35,4 @@
 ## BUGS
 * gamma3 still doesn’t work
 * zooming in and out a lot can still cause a DEVICE OUT OF MEMORY vulkan error
-* if all pages in a non model document are visible, and you drag the mouse it crashes
 * Opening multiple documents causes a crash

@@ -738,33 +738,21 @@ QAbstractScrollArea* V3dModelManager::GetPageViewWidget() {
     QAbstractScrollArea* pageView = nullptr;
 
     for (QWidget* widget : QApplication::allWidgets()) {
-        bool hasScrollArea = false;
-        bool parentIsWidget = false;
-        bool has8Children = false;
-        bool has1QVboxChild = false;
-        bool has5QFrameChild = false;
-
         QAbstractScrollArea* scrollArea = dynamic_cast<QAbstractScrollArea*>(widget);
 
-        if (scrollArea != nullptr) {
-            hasScrollArea = true;
-        } else {
+        if (scrollArea == nullptr) {
             continue;
-        }
+        } 
 
         QWidget* parent = dynamic_cast<QWidget*>(widget->parent());
 
-        if (parent != nullptr) {
-            parentIsWidget = true;
-        } else {
+        if (parent == nullptr) {
             continue;
-        }
+        } 
 
-        if (parent->children().size() == 9) {
-            has8Children = true;
-        } else {
+        if (parent->children().size() != 9) {
             continue;
-        }
+        } 
 
         int QBoxLayoutCount = 0;
         for (auto child : parent->children()) {
@@ -775,11 +763,9 @@ QAbstractScrollArea* V3dModelManager::GetPageViewWidget() {
             }
         }
 
-        if (QBoxLayoutCount == 1) {
-            has1QVboxChild = true;
-        } else {
+        if (QBoxLayoutCount != 1) {
             continue;
-        }
+        } 
 
         int QFrameCount = 0;
         for (auto child : parent->children()) {
@@ -790,19 +776,15 @@ QAbstractScrollArea* V3dModelManager::GetPageViewWidget() {
             }
         }
 
-        if (QFrameCount == 6) {
-            has5QFrameChild = true;
-        } else {
+        if (QFrameCount != 6) {
             continue;
+        } 
+
+        if (pageView != nullptr) {
+            std::cout << "ERROR, multiple pageViews found" << std::endl;
         }
 
-        if (hasScrollArea && parentIsWidget && has8Children && has1QVboxChild && has5QFrameChild) {
-            if (pageView != nullptr) {
-                std::cout << "ERROR, multiple pageViews found" << std::endl;
-            }
-
-            pageView = dynamic_cast<QAbstractScrollArea*>(widget);
-        }
+        pageView = dynamic_cast<QAbstractScrollArea*>(widget);
     }
 
     return pageView;
