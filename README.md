@@ -31,8 +31,10 @@
 * make the index and vertex buffers once, than cache them, currently they are recreated every time we rerender
 * documentation
 * Presentation Mode dosent work at all
+* Currently the plugin requires: `libpoppler.so.130`, when it should really require: `libpoppler.so.134`, or even more idealy: `libpoppler.so`
 
 ## BUGS
 * gamma3 still doesn’t work
 * zooming in and out a lot can still cause a DEVICE OUT OF MEMORY vulkan error
 * Opening multiple documents causes a crash
+* Flickering on model movement on some systems
