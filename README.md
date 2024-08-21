@@ -22,9 +22,7 @@
     * in the short term im assuming all pages in a document are the same size, fix this
     * the 12 pixel margin may change depending on resolution, 2k vs 4k vs 1080p
 * Okular zoom optimization
-* gimbal lock only appears to happen when the mouse moves off of the model on the right or top sides. Look into passing different values to the “pageview” parameter of the drag/shift/rotate functions of the model
 * shader paths change when an external user uses the plugin
-* Switch over to precision system built into xstream, instead of custom one
 * New renderer
 * Clean up includes
 * Clean up CMAKE files
