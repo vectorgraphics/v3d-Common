@@ -62,7 +62,7 @@ QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int wi
 
     unsigned char* imageData = m_HeadlessRenderer->render(width, height, &imageSubresourceLayout, vertices, indices, mvp);
 
-    unsigned char* imgDatatmp = imageData;
+    unsigned char* imgDataTmp = imageData;
 
     size_t finalImageSize = width * height * 4;
 
@@ -70,13 +70,13 @@ QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int wi
     vectorData.reserve(finalImageSize);
 
     for (int32_t y = 0; y < height; y++) {
-        unsigned int *row = (unsigned int*)imgDatatmp;
+        unsigned int *row = (unsigned int*)imgDataTmp;
         size_t rowBytes = width * 4;
     
         vectorData.resize(vectorData.size() + rowBytes);
         std::memcpy(vectorData.data() + vectorData.size() - rowBytes, (unsigned char*)row, rowBytes);
 
-        imgDatatmp += imageSubresourceLayout.rowPitch;
+        imgDataTmp += imageSubresourceLayout.rowPitch;
     }
 
     delete imageData;
@@ -213,10 +213,10 @@ bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
     if (normalizedMousePos.pageNumber != -1) {
         int modelIndex = 0;
         for (auto& model : m_Models[normalizedMousePos.pageNumber]) {
-            bool horizontalyOnModel = normalizedPositionOnPage.x > model.minBound.x && normalizedPositionOnPage.x < model.maxBound.x;
-            bool verticalyOnModel = normalizedPositionOnPage.y > model.minBound.y && normalizedPositionOnPage.y < model.maxBound.y;
+            bool horizontallyOnModel = normalizedPositionOnPage.x > model.minBound.x && normalizedPositionOnPage.x < model.maxBound.x;
+            bool verticallyOnModel = normalizedPositionOnPage.y > model.minBound.y && normalizedPositionOnPage.y < model.maxBound.y;
 
-            if (!(horizontalyOnModel && verticalyOnModel)) {
+            if (!(horizontallyOnModel && verticallyOnModel)) {
                 continue;
             }
 
@@ -269,10 +269,10 @@ bool V3dModelManager::wheelEvent(QWheelEvent* event) {
         NormalizedMousePosition normalizedMousePos = GetNormalizedMousePosition(m_ActiveModelInfo.x);
         glm::vec2 normalizedPositionOnPage = normalizedMousePos.currentPosition;
 
-        bool horizontalyOnModel = normalizedPositionOnPage.x > m_ActiveModel->minBound.x && normalizedPositionOnPage.x < m_ActiveModel->maxBound.x;
-        bool verticalyOnModel = normalizedPositionOnPage.y > m_ActiveModel->minBound.y && normalizedPositionOnPage.y < m_ActiveModel->maxBound.y;
+        bool horizontallyOnModel = normalizedPositionOnPage.x > m_ActiveModel->minBound.x && normalizedPositionOnPage.x < m_ActiveModel->maxBound.x;
+        bool verticallyOnModel = normalizedPositionOnPage.y > m_ActiveModel->minBound.y && normalizedPositionOnPage.y < m_ActiveModel->maxBound.y;
 
-        if (horizontalyOnModel && verticalyOnModel) {
+        if (horizontallyOnModel && verticallyOnModel) {
             if (event->angleDelta().y() < 0) {
                 m_ActiveModel->zoom /= m_ActiveModel->file->headerInfo.zoomFactor;
             } else {
@@ -399,10 +399,10 @@ V3dModelManager::NormalizedMousePosition V3dModelManager::GetNormalizedMousePosi
             int horizontalMargin = (m_PageView->width() - m_CachedRequestSizes[pageNumber].size.x) / 2;
             int verticalMargin = (m_PageView->height() - m_CachedRequestSizes[pageNumber].size.y) / 2;
 
-            bool horizontalyOnPage = m_MousePosition.x > horizontalMargin && m_MousePosition.x < horizontalMargin + m_CachedRequestSizes[pageNumber].size.x;
-            bool verticalyOnPage = m_MousePosition.y > verticalMargin && m_MousePosition.y < verticalMargin + m_CachedRequestSizes[pageNumber].size.y;
+            bool horizontallyOnPage = m_MousePosition.x > horizontalMargin && m_MousePosition.x < horizontalMargin + m_CachedRequestSizes[pageNumber].size.x;
+            bool verticallyOnPage = m_MousePosition.y > verticalMargin && m_MousePosition.y < verticalMargin + m_CachedRequestSizes[pageNumber].size.y;
 
-            if (horizontalyOnPage && verticalyOnPage) {
+            if (horizontallyOnPage && verticallyOnPage) {
                 normalizedMousePosition.pageNumber = 0;
             } else {
                 normalizedMousePosition.pageNumber = -1;
