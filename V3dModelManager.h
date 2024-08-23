@@ -40,6 +40,7 @@ public:
     bool mouseMoveEvent(QMouseEvent* event);
     bool mouseButtonPressEvent(QMouseEvent* event);
     bool mouseButtonReleaseEvent(QMouseEvent* event);
+    bool wheelEvent(QWheelEvent* event);
 
     void DrawMouseBoundaries(QImage* img, size_t pageNumber);
 
@@ -122,5 +123,5 @@ private:
     std::vector<Okular::Page*> m_Pages;
 
     V3dModel* m_ActiveModel;
-    glm::ivec2 m_ActiveModelInfo;
+    glm::ivec2 m_ActiveModelInfo{ -1, -1 };
 };

@@ -51,7 +51,12 @@ QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int wi
     glm::mat4 model = glm::mat4{ 1.0f };
 
     // Projection
-    m_Models[pageNumber][modelIndex].setProjection(glm::vec2{ width, height });
+    glm::vec2 canvasSize = {
+        (m_Models[pageNumber][modelIndex].maxBound.x - m_Models[pageNumber][modelIndex].minBound.x) * m_CachedRequestSizes[pageNumber].size.x,
+        (m_Models[pageNumber][modelIndex].maxBound.y - m_Models[pageNumber][modelIndex].minBound.y) * m_CachedRequestSizes[pageNumber].size.y,
+    };
+
+    m_Models[pageNumber][modelIndex].setProjection(canvasSize);
 
 	glm::mat4 mvp = m_Models[pageNumber][modelIndex].projectionMatrix * m_Models[pageNumber][modelIndex].viewMatrix * model;
 
@@ -202,8 +207,9 @@ bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
     glm::vec2 lastNormalizedPositionOnPage = normalizedMousePos.lastPosition;
 
     m_ActiveModel = nullptr;
+    m_ActiveModelInfo = glm::ivec2{ -1, -1 };
 
-    // If we are not over the page, than we are not over any models on that page, and so we should no have an activeModel
+    // If we are not over the page, than we are not over any models on that page, and so we should not have an activeModel
     if (normalizedMousePos.pageNumber != -1) {
         int modelIndex = 0;
         for (auto& model : m_Models[normalizedMousePos.pageNumber]) {
@@ -253,12 +259,48 @@ bool V3dModelManager::mouseButtonReleaseEvent(QMouseEvent* event) {
         return true;
     }
 
-    m_ActiveModel = nullptr;
-    m_ActiveModelInfo = glm::ivec2{ -1, -1 };
-
     m_MouseDown = false;
 
     return true;
+}
+
+bool V3dModelManager::wheelEvent(QWheelEvent* event) {
+    if (m_ActiveModel != nullptr && m_ActiveModelInfo.x != -1 && m_ActiveModelInfo.y != -1) {
+        NormalizedMousePosition normalizedMousePos = GetNormalizedMousePosition(m_ActiveModelInfo.x);
+        glm::vec2 normalizedPositionOnPage = normalizedMousePos.currentPosition;
+
+        bool horizontalyOnModel = normalizedPositionOnPage.x > m_ActiveModel->minBound.x && normalizedPositionOnPage.x < m_ActiveModel->maxBound.x;
+        bool verticalyOnModel = normalizedPositionOnPage.y > m_ActiveModel->minBound.y && normalizedPositionOnPage.y < m_ActiveModel->maxBound.y;
+
+        if (horizontalyOnModel && verticalyOnModel) {
+            if (event->angleDelta().y() < 0) {
+                m_ActiveModel->zoom /= m_ActiveModel->file->headerInfo.zoomFactor;
+            } else {
+                m_ActiveModel->zoom *= m_ActiveModel->file->headerInfo.zoomFactor;
+            }
+
+            float maxZoom = std::sqrt(std::numeric_limits<float>::max());
+            float minZoom = 1 / maxZoom;
+
+            if (m_ActiveModel->zoom < minZoom) {
+                m_ActiveModel->zoom = minZoom;
+            } else if (m_ActiveModel->zoom > maxZoom) {
+                m_ActiveModel->zoom = maxZoom;
+            }
+
+            glm::vec2 canvasSize = {
+                (m_ActiveModel->maxBound.x - m_ActiveModel->minBound.x) * m_CachedRequestSizes[m_ActiveModelInfo.x].size.x,
+                (m_ActiveModel->maxBound.y - m_ActiveModel->minBound.y) * m_CachedRequestSizes[m_ActiveModelInfo.x].size.y,
+            };
+
+            m_ActiveModel->setProjection(canvasSize);
+            requestPixmapRefresh(m_ActiveModelInfo.x);
+
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void V3dModelManager::DrawMouseBoundaries(QImage* img, size_t pageNumber) {

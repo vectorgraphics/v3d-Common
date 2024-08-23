@@ -3,6 +3,7 @@
 #include <qcoreevent.h>
 #include <qevent.h>
 #include <QPainter>
+#include <QWheelEvent>
 
 #include "V3dModelManager.h"
 
@@ -34,7 +35,14 @@ bool EventFilter::eventFilter(QObject *object, QEvent *event) {
         if (mouseRelease != nullptr) {
             return modelManager->mouseButtonReleaseEvent(mouseRelease);
         }
-    } 
+    } else if (event->type() == QEvent::Wheel) {
+
+        QWheelEvent* wheelMove = dynamic_cast<QWheelEvent*>(event);
+
+        if (wheelMove != nullptr) {
+            return modelManager->wheelEvent(wheelMove);
+        }
+    }
 
     return false;
 }
