@@ -12,7 +12,7 @@
 
 #include <chrono>
 
-#define VULKAN_DEBUG 1
+// #define VULKAN_DEBUG 1
 
 HeadlessRenderer::HeadlessRenderer(std::string shaderPath)
 	: shaderPath(shaderPath) { 

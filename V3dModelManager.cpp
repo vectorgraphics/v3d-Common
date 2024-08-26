@@ -103,7 +103,7 @@ bool V3dModelManager::Empty() {
     return m_Models.empty();
 }
 
-glm::vec2 V3dModelManager::GetPageSize(size_t pageNumber) {
+glm::vec2 V3dModelManager::GetCanvasSize(size_t pageNumber) {
     return glm::vec2{ m_Models[pageNumber][0].file->headerInfo.canvasWidth, m_Models[pageNumber][0].file->headerInfo.canvasHeight };
 }
 

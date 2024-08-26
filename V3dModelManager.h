@@ -33,7 +33,7 @@ public:
     std::vector<V3dModel>& Models(size_t pageNumber);
     bool Empty();
 
-    glm::vec2 GetPageSize(size_t pageNumber);
+    glm::vec2 GetCanvasSize(size_t pageNumber);
 
     void SetDocument(const Okular::Document* document);
 
