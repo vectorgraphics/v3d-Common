@@ -6,7 +6,7 @@
 #include <array>
 
 #include "V3dObject.h"
-#include "3rdParty/xstream.h"
+#include "../3rdParty/xstream.h"
 
 enum ObjectTypes {
     MATERIAL = 1,

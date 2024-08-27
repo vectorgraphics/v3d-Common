@@ -15,7 +15,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <vulkan/vulkan.h>
-#include "3rdParty/VulkanTools/VulkanTools.h"
+#include "../3rdParty/VulkanTools/VulkanTools.h"
 
 #define DEBUG (!NDEBUG)
 
