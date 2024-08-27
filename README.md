@@ -23,6 +23,7 @@
     * the 12 pixel margin may change depending on resolution, 2k vs 4k vs 1080p
 * Okular zoom optimization
 * shader paths change when an external user uses the plugin
+    * Currently the plugin looks for the shaders in the path that Okular is run in
 * New renderer
 * Clean up includes
 * Clean up CMAKE files
@@ -31,7 +32,7 @@
 * make the index and vertex buffers once, than cache them, currently they are recreated every time we rerender
 * documentation
 * Presentation Mode dosent work at all
-* Currently the plugin requires: `libpoppler.so.130`, when it should really require: `libpoppler.so.134`, or even more idealy: `libpoppler.so`
+* Customizable Controls
 
 ## BUGS
 * gamma3 still doesn’t work
