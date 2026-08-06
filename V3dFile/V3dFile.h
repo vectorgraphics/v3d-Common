@@ -2,8 +2,11 @@
 
 #include "V3dObjects.h"
 #include "V3dHeaderInfo.h"
+#include "Mesh.h"
 
 #include "xstream.h"
+
+class V3dModel;
 
 class V3dFile {
 public:
@@ -16,12 +19,12 @@ public:
     std::vector<TRIPLE> centers;
     std::vector<V3dMaterial> materials;
 
-    std::vector<std::unique_ptr<V3dObject>> m_Objects;
+    std::vector<std::unique_ptr<V3dObject>> objects;
 
     V3dHeaderInfo headerInfo;
 
-    std::vector<float> vertices;
-    std::vector<unsigned int> indices;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode);
+
 
 private:
     void load(xdr::ixstream& xdrFile);

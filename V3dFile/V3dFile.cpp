@@ -9,10 +9,42 @@
 
 #include "V3dUtil.h"
 
-// #define printObjectTypes
+#include "rgba.h"
+#include "bezierpatch.h"
+#include "beziercurve.h"
+
+// V3dObjects.cpp declares camp::materials; bring the declaration into scope.
+struct V3dMaterial;
+namespace camp { extern const std::vector<V3dMaterial>* materials; }
+
+// Billboard transform: rotate vertex positions around a center point using the
+// normal matrix (inverse-transpose of view rotation) so that billboard objects
+// (labels, annotations) always face the camera.  Mirrors camp::billboardTransform
+// from asymptote/render.h.
+static inline glm::vec3 billboardTransform(const glm::vec3& center, const glm::vec3& v)
+{
+    double cx = center.x;
+    double cy = center.y;
+    double cz = center.z;
+
+    double x = v.x - cx;
+    double y = v.y - cy;
+    double z = v.z - cz;
+
+    const glm::dmat3& normMat = camp::getNormMat();
+    const double* BBT = glm::value_ptr(normMat);
+
+    return glm::vec3(
+        float(x * BBT[0] + y * BBT[3] + z * BBT[6] + cx),
+        float(x * BBT[1] + y * BBT[4] + z * BBT[7] + cy),
+        float(x * BBT[2] + y * BBT[5] + z * BBT[8] + cz)
+    );
+}
+
+#define printObjectTypes
 
 #ifdef printObjectTypes
-    #define PRINT_OBJECT_TYPE(t) std::cout << #t << std::endl
+    #define PRINT_OBJECT_TYPE(t) do { if (std::getenv("OKULAR_V3D_DEBUG")) std::cout << #t << std::endl; } while(0)
 #else
     #define PRINT_OBJECT_TYPE(t)
 #endif
@@ -32,7 +64,7 @@ V3dFile::V3dFile(const std::string& fileName) {
 }
 
 V3dFile::V3dFile(xdr::memixstream& xdrFile) {
-   load(xdrFile);
+    load(xdrFile);
 }
 
 void V3dFile::load(xdr::ixstream& xdrFile) {
@@ -67,6 +99,7 @@ void V3dFile::load(xdr::ixstream& xdrFile) {
             xdrFile >> material.shininess;
             xdrFile >> material.metallic;
             xdrFile >> material.fresnel0;
+            xdrFile >> material.lightOn;
 
             materials.push_back(material);
             break;
@@ -85,6 +118,12 @@ void V3dFile::load(xdr::ixstream& xdrFile) {
             PRINT_OBJECT_TYPE(CENTERS);
             UINT centersLength;
             xdrFile >> centersLength;
+
+            // Sanity cap to prevent bad_alloc from a crafted file.
+            if (centersLength > 1000000) {
+                std::cout << "WARNING: centers count (" << centersLength << ") exceeds limit, skipping." << std::endl;
+                break;
+            }
 
             if (centersLength > 0) {
                 centers.resize(centersLength);
@@ -201,38 +240,68 @@ void V3dFile::load(xdr::ixstream& xdrFile) {
                     case VIBRATE_TIME:
                         headerInfo.vibrateTime = readReal(xdrFile, doublePrecisionFlag);    
                         break;    
+
+                    case IMAGE: {
+                        uint64_t strLen;
+                        xdrFile >> strLen;
+                        std::string s;
+                        s.resize(strLen);
+                        for (uint64_t k = 0; k < strLen; ++k) {
+                            xdr::xbyte c;
+                            xdrFile >> c;
+                            s[k] = static_cast<char>(c);
+                        }
+                        // Advance remaining words to match getWordSize: (strLen+3)/4 data words
+                        uint64_t totalDataWords = (strLen + 3) / 4;
+                        for (uint64_t k = strLen; k < totalDataWords * 4; ++k) {
+                            xdr::xbyte dummy;
+                            xdrFile >> dummy;
+                        }
+                        headerInfo.imageName = std::move(s);
+                        break;
+                    }    
+
+                    default:
+                        // Skip unknown header entries by consuming 'length' XDR words.
+                        // This prevents stream corruption when newer v3d files contain
+                        // header keys that this version doesn't recognize.
+                        for (UINT j = 0; j < length; ++j) {
+                            uint32_t skipWord;
+                            xdrFile >> skipWord;
+                        }
+                        break;
                 }
             }
             break;
 
         case ObjectTypes::LINE:
             PRINT_OBJECT_TYPE(LINE);
-            m_Objects.push_back(std::move(std::make_unique<V3dLineSegment>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dLineSegment>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::TRIANGLE:
             PRINT_OBJECT_TYPE(TRIANGLE);
-            m_Objects.push_back(std::move(std::make_unique<V3dStraightTriangle>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dStraightTriangle>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::QUAD:
             PRINT_OBJECT_TYPE(QUAD);
-            m_Objects.push_back(std::move(std::make_unique<V3dStraightPlanarQuad>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dStraightPlanarQuad>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::CURVE:
             PRINT_OBJECT_TYPE(CURVE);
-            m_Objects.push_back(std::move(std::make_unique<V3dBezierCurve>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dBezierCurve>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::BEZIER_TRIANGLE:
             PRINT_OBJECT_TYPE(BEZIER_TRIANGLE);
-            m_Objects.push_back(std::move(std::make_unique<V3dBezierTriangle>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dBezierTriangle>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::BEZIER_PATCH:
             PRINT_OBJECT_TYPE(BEZIER_PATCH);
-            m_Objects.push_back(std::move(std::make_unique<V3dBezierPatch>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dBezierPatch>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::LINE_COLOR:
@@ -242,12 +311,12 @@ void V3dFile::load(xdr::ixstream& xdrFile) {
 
         case ObjectTypes::TRIANGLE_COLOR:
             PRINT_OBJECT_TYPE(TRIANGLE_COLOR);
-            m_Objects.push_back(std::move(std::make_unique<V3dStraightTriangleWithCornerColors>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dStraightTriangleWithCornerColors>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::QUAD_COLOR:
             PRINT_OBJECT_TYPE(QUAD_COLOR);
-            m_Objects.push_back(std::move(std::make_unique<V3dStraightPlanarQuadWithCornerColors>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dStraightPlanarQuadWithCornerColors>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::CURVE_COLOR:
@@ -257,42 +326,42 @@ void V3dFile::load(xdr::ixstream& xdrFile) {
 
         case ObjectTypes::BEZIER_TRIANGLE_COLOR:
             PRINT_OBJECT_TYPE(BEZIER_TRIANGLE_COLOR);
-            m_Objects.push_back(std::move(std::make_unique<V3dBezierTriangleWithCornerColors>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dBezierTriangleWithCornerColors>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::BEZIER_PATCH_COLOR:
             PRINT_OBJECT_TYPE(BEZIER_PATCH_COLOR);
-            m_Objects.push_back(std::move(std::make_unique<V3dBezierPatchWithCornerColors>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dBezierPatchWithCornerColors>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::TRIANGLES:
             PRINT_OBJECT_TYPE(TRIANGLES);
-            m_Objects.push_back(std::move(std::make_unique<V3dTriangleGroup>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dTriangleGroup>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::DISK:
             PRINT_OBJECT_TYPE(DISK);
-            m_Objects.push_back(std::move(std::make_unique<V3dDisk>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dDisk>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::CYLINDER:
             PRINT_OBJECT_TYPE(CYLINDER);
-            m_Objects.push_back(std::move(std::make_unique<V3dCylinder>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dCylinder>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::TUBE:
             PRINT_OBJECT_TYPE(TUBE);
-            m_Objects.push_back(std::move(std::make_unique<V3dTube>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dTube>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::SPHERE:
             PRINT_OBJECT_TYPE(SPHERE);
-            m_Objects.push_back(std::move(std::make_unique<V3dSphere>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dSphere>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::HALF_SPHERE:
             PRINT_OBJECT_TYPE(HALF_SPHERE);
-            m_Objects.push_back(std::move(std::make_unique<V3dHemiSphere>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dHemiSphere>(xdrFile, doublePrecisionFlag)));
             break;
 
         case ObjectTypes::ANIMATION:
@@ -302,22 +371,50 @@ void V3dFile::load(xdr::ixstream& xdrFile) {
 
         case ObjectTypes::PIXEL:
             PRINT_OBJECT_TYPE(PIXEL);
-            m_Objects.push_back(std::move(std::make_unique<V3dPixel>(xdrFile, doublePrecisionFlag)));
+            objects.push_back(std::move(std::make_unique<V3dPixel>(xdrFile, doublePrecisionFlag)));
             break;
         }
     }
 
     xdrFile.close();
+}
 
-    for (auto& object : m_Objects) {
-        std::vector<float> vert = object->getVertexData();
-        std::vector<unsigned int> ind = object->getIndices();
+void V3dFile::QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) {
+    // Set global materials pointer so V3dObject::QueueMesh can check material alpha.
+    // Matches Asymptote: drawBezierPatch::render() reads diffuse.A from the current
+    // material to set transparent = (diffuse.A < 1.0).
+    camp::materials = &materials;
 
-        appendOffset(indices, ind, vertices.size() / 6);
-        vertices.insert(vertices.end(), vert.begin(), vert.end());
-    }
+    for (auto& object : objects) {
+        // Record buffer sizes before this object adds its vertices.
+        size_t matBefore = materialData.materialVertices.size();
+        size_t colBefore = colorData.colorVertices.size();
+        size_t lineBefore = lineData.materialVertices.size();
 
-    if (indices.empty() || vertices.empty()) {
-        std::cout << "ERROR: Model is made up entirely of objects that cannot currently give vertices. It wont be rendered." << std::endl;
+        object->QueueMesh(imageWidth, imageHeight, sceneMinBound, sceneMaxBound, remesh, orthographic, drawMode);
+
+        // Apply billboard transform if this object has a center index.
+        // In the v3d format, centerIndex == 0 means "no billboarding",
+        // while centerIndex > 0 indexes into the centers array (1-based).
+        UINT ci = object->centerIndex;
+        if (ci > 0 && ci <= centers.size()) {
+            glm::vec3 c = centers[ci - 1];
+
+            // Transform material vertices added by this object.
+            for (size_t i = matBefore; i < materialData.materialVertices.size(); ++i) {
+                materialData.materialVertices[i].position = billboardTransform(c, materialData.materialVertices[i].position);
+            }
+
+            // Transform color vertices added by this object.
+            for (size_t i = colBefore; i < colorData.colorVertices.size(); ++i) {
+                colorData.colorVertices[i].position = billboardTransform(c, colorData.colorVertices[i].position);
+            }
+
+            // Transform line/curve vertices added by this object.
+            for (size_t i = lineBefore; i < lineData.materialVertices.size(); ++i) {
+                lineData.materialVertices[i].position = billboardTransform(c, lineData.materialVertices[i].position);
+            }
+        }
     }
 }
+

@@ -1,10 +1,17 @@
 #include "V3dModelManager.h"
 
 #include <QApplication>
-#include <QBoxLayout>
+#include <QColorSpace>
 #include <QScrollBar>
 #include <QPainter>
+#include <QStandardPaths>
 #include <QWindow>
+#include <cstdlib>
+#include <fstream>
+#include <set>
+#include <QTimer>
+#include <QSemaphore>
+#include <QThread>
 
 #include <generator.h>
 #include <gui/priorities.h>
@@ -14,10 +21,60 @@
 #include "Utility/ApplicationEventFilter.h"
 #include "Utility/ProtectedFunctionCaller.h"
 
+#include "seconds.h"
+
+#include "rgba.h"
+#include "bezierpatch.h"
+
+namespace camp {
+    glm::dmat4 projViewMat{ 1.0 };
+    glm::dmat3 normMat{ 1.0 };
+
+    const glm::dmat4& getProjViewMat()
+    {
+        // static glm::dmat4 dummy;
+        return projViewMat;
+    }
+    const glm::dmat3& getNormMat()     { return normMat; }
+}
+
 bool fileExists(const std::string& path) {
     std::ifstream f{ path.c_str() };
     return f.good();
 }
+
+// Custom event for marshaling IBL download prompts from background threads to main thread.
+class IBLPromptEvent : public QEvent {
+public:
+    using Callback = std::function<bool()>;
+    IBLPromptEvent(Callback&& cb, QSemaphore* sem)
+        : QEvent(QEvent::Type(QEvent::User + 1)), m_Callback(std::move(cb)), m_Semaphore(sem) {}
+
+    Callback m_Callback;
+    QSemaphore* m_Semaphore;
+};
+
+// Event filter installed on qApp to catch IBLPromptEvent and run the callback on the main thread.
+class IBLEventFilter : public QObject {
+public:
+    // NO Q_OBJECT macro -- we only need eventFilter, no signals/slots.
+    explicit IBLEventFilter(QObject* parent) : QObject(parent) {}
+
+    bool eventFilter(QObject* object, QEvent* event) override {
+        if (event->type() == QEvent::Type(QEvent::User + 1)) {
+            IBLPromptEvent* promptEvent = static_cast<IBLPromptEvent*>(event);
+            promptEvent->m_Callback();
+            if (promptEvent->m_Semaphore) {
+                promptEvent->m_Semaphore->release();
+            }
+            // Do NOT delete event here -- Qt owns it and will delete it after
+            // the filter chain returns. Deleting it ourselves causes use-after-free
+            // when sendPostedEvents tries to clean up its smart pointer to the event.
+            return true;
+        }
+        return false;
+    }
+};
 
 V3dModelManager::V3dModelManager(const Okular::Document* document) 
     : m_Document(document)
@@ -34,85 +91,257 @@ V3dModelManager::V3dModelManager(const Okular::Document* document)
     std::string shaderPath = "";
 
     for (const auto& path : shaderSearchPaths) {
-        if (fileExists(path + "vertex.spv") && fileExists(path + "fragment.spv")) {
+        if (fileExists(path + "vertex.glsl") && fileExists(path + "fragment.glsl")) {
             shaderPath = path;
             break;
         }
     }
 
     if (shaderPath == "") {
-        std::cout << "Shaders could not be found, plugin cannot run without shaders." << std::endl;
-        std::exit(1);
+        std::cout << "Shaders could not be found, disabling v3d rendering." << std::endl;
+        // Do NOT call std::exit() -- this runs for every PDF opened.
+        // m_HeadlessRenderer stays nullptr; RenderModel will return a blank image.
+    } else {
+        m_HeadlessRenderer = std::make_unique<HeadlessRenderer>(shaderPath);
     }
-
-    m_HeadlessRenderer = std::make_unique<HeadlessRenderer>(shaderPath);
 
     m_PageView = GetPageViewWidget();
 
-    // Qt takes ownership of event filters once installed, and deletes them when no longer needed
-    m_EventFilter = new EventFilter(m_PageView, this);
-    m_PageView->viewport()->installEventFilter(m_EventFilter);
+    // Parent filters to our own QObject so we fully control their lifetime.
+    // Do NOT parent them to m_PageView or qApp -- those parents would delete
+    // the filters independently during Qt teardown, causing double-frees.
+    if (m_PageView) {
+        m_EventFilter = new EventFilter(&m_FilterParent, this);
+        m_PageView->viewport()->installEventFilter(m_EventFilter);
+    }
 
-    m_ApplicationEventFilter = new ApplicationEventFilter(qApp, this);
+    m_ApplicationEventFilter = new ApplicationEventFilter(&m_FilterParent, this);
     qApp->installEventFilter(m_ApplicationEventFilter);
+
+    // Install IBL event filter on qApp to handle cross-thread IBL download prompts.
+    m_IBLEventFilter = new IBLEventFilter(&m_FilterParent);
+    qApp->installEventFilter(m_IBLEventFilter);
 }
 
+V3dModelManager::~V3dModelManager() {
+    m_Destroying = true;
+
+    // Don't touch m_PendingTimers -- they may have been created on a different thread.
+    // The m_Destroying flag prevents callbacks from accessing destroyed members.
+    // Timers self-destruct when their singleShot fires or Okular exits.
+    // Null out back-references first so in-flight events are safe.
+    if (m_EventFilter) {
+        m_EventFilter->modelManager = nullptr;
+    }
+    if (m_ApplicationEventFilter) {
+        m_ApplicationEventFilter->modelManager = nullptr;
+    }
+
+    // Unregister from Qt event chains before the filters are destroyed.
+    QCoreApplication* app = QCoreApplication::instance();
+    if (app && m_ApplicationEventFilter) {
+        app->removeEventFilter(m_ApplicationEventFilter);
+    }
+    if (app && m_IBLEventFilter) {
+        app->removeEventFilter(m_IBLEventFilter);
+    }
+    if (m_PageView && m_EventFilter) {
+        m_PageView->viewport()->removeEventFilter(m_EventFilter);
+    }
+
+    // m_FilterParent destroys both filters as its children.
+}
+
+
+
 void V3dModelManager::AddModel(V3dModel model, size_t pageNumber) {
-    m_Models.resize(pageNumber + 1);
+    QMutexLocker locker(&m_ModelsMutex);
+
+    if (m_Models.size() < pageNumber + 1) {
+        m_Models.resize(pageNumber + 1);
+    }
     m_Models[pageNumber].emplace_back(std::move(model));
 
     m_Models[pageNumber].back().initProjection();
 
-    m_ModelImages.resize(pageNumber + 1);
+    if (m_ModelImages.size() < pageNumber + 1) {
+        m_ModelImages.resize(pageNumber + 1);
+    }
     m_ModelImages[pageNumber].push_back(QImage{ });
 }
 
-QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int width, int height) {
+QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int imageWidth, int imageHeight) {
+    QMutexLocker locker(&m_ModelsMutex);
+
+    // If shaders were not found at construction, rendering is disabled.
+    if (!m_HeadlessRenderer) {
+        QImage image{ imageWidth, imageHeight, QImage::Format_ARGB32 };
+        image.fill(Qt::black);
+        return image;
+    }
+
+    // Guard against zero/negative dimensions (tiny models, small requests) which
+    // produce NaN projection matrices or invalid Vulkan extents.
+    if (imageWidth <= 0 || imageHeight <= 0) {
+        QImage image{ std::max(imageWidth, 1), std::max(imageHeight, 1), QImage::Format_ARGB32 };
+        image.fill(Qt::black);
+        return image;
+    }
+
+    // Check IBL availability early -- if the model needs IBL but files aren't
+    // available yet, defer rendering entirely until download completes.
+    std::string imageName = m_Models[pageNumber][modelIndex].file->headerInfo.imageName;
+    bool useIBL = false;
+    std::string iblPath = "";
+    if (!imageName.empty() && !m_IBLDeclined) {
+        iblPath = resolveIBLPath(imageName, /*doSchedule=*/false);
+        if (iblPath.empty()) {
+            // IBL missing -- track this model and return blank.
+            m_ModelsWithMissingIBL.insert({pageNumber, modelIndex});
+
+            // Marshal the download prompt to the main thread via custom event.
+            // Post-and-forget: we can't wait synchronously because Okular's
+            // background worker thread doesn't process events during PDF loading.
+            // The popup will appear once Okular returns to its main event loop.
+            std::string base = getIBLBase();
+            scheduleIBLPrompt(imageName, base);
+
+            QImage image{ imageWidth, imageHeight, QImage::Format_ARGB32 };
+            image.fill(Qt::black);
+            return image;
+        }
+        useIBL = true;
+    }
+
     if (!m_Models[pageNumber][modelIndex].m_HasChanged && 
-        m_ModelImages[pageNumber][modelIndex].width() == width && 
-        m_ModelImages[pageNumber][modelIndex].height() == height) {
+        m_ModelImages[pageNumber][modelIndex].width() == imageWidth &&
+        m_ModelImages[pageNumber][modelIndex].height() == imageHeight) {
 
         return m_ModelImages[pageNumber][modelIndex];
     }
 
-    std::vector<float> vertices = m_Models[pageNumber][modelIndex].file->vertices;
-    std::vector<unsigned int> indices = m_Models[pageNumber][modelIndex].file->indices;
-    
-    if (vertices.empty() || indices.empty()) {
-        QImage image{ width, height, QImage::Format_ARGB32 };
-
-        image.fill(Qt::black);
-
-        return image;
-    }
-
-    VkSubresourceLayout imageSubresourceLayout;
-
-    // Model
-    glm::mat4 model = glm::mat4{ 1.0f };
+    m_Models[pageNumber][modelIndex].remesh = true; // TODO
 
     // Projection
+    EnsureCachedRequestSize(pageNumber);
     glm::vec2 canvasSize = {
         (m_Models[pageNumber][modelIndex].maxBound.x - m_Models[pageNumber][modelIndex].minBound.x) * m_CachedRequestSizes[pageNumber].size.x,
         (m_Models[pageNumber][modelIndex].maxBound.y - m_Models[pageNumber][modelIndex].minBound.y) * m_CachedRequestSizes[pageNumber].size.y,
     };
 
+    // Guard against zero canvas size which causes division-by-zero in setProjection.
+    if (canvasSize.x <= 0.0f || canvasSize.y <= 0.0f) {
+        QImage image{ imageWidth, imageHeight, QImage::Format_ARGB32 };
+        image.fill(Qt::black);
+        return image;
+    }
+
     m_Models[pageNumber][modelIndex].setProjection(canvasSize);
 
-	glm::mat4 mvp = m_Models[pageNumber][modelIndex].projectionMatrix * m_Models[pageNumber][modelIndex].viewMatrix * model;
+    // Scene bounds for QueueMesh culling (use headerInfo when frustum params invalid)
+    float Zmin = m_Models[pageNumber][modelIndex].file->headerInfo.minBound.z;
+    float Zmax = m_Models[pageNumber][modelIndex].file->headerInfo.maxBound.z;
+    triple sceneMinBound(
+        m_Models[pageNumber][modelIndex].xmin,
+        m_Models[pageNumber][modelIndex].ymin,
+        Zmin);
+    triple sceneMaxBound(
+        m_Models[pageNumber][modelIndex].xmax,
+        m_Models[pageNumber][modelIndex].ymax,
+        Zmax);
 
-    unsigned char* imageData = m_HeadlessRenderer->render(width, height, &imageSubresourceLayout, vertices, indices, mvp);
+    if(sceneMinBound.getx() >= sceneMaxBound.getx() || sceneMinBound.gety() >= sceneMaxBound.gety() || sceneMinBound.getz() >= sceneMaxBound.getz()) {
+        sceneMinBound = m_Models[pageNumber][modelIndex].file->headerInfo.minBound;
+        sceneMaxBound = m_Models[pageNumber][modelIndex].file->headerInfo.maxBound;
+    }
+
+    using namespace std;
+    using namespace camp;
+
+    // Match vkrender.cc: projViewMat = projMat * viewMat
+    projViewMat = m_Models[pageNumber][modelIndex].projMat * m_Models[pageNumber][modelIndex].viewMat;
+
+    normMat = glm::dmat3{ glm::inverse(m_Models[pageNumber][modelIndex].viewMat) };
+
+    if (m_ReQueueModels || m_Models[pageNumber][modelIndex].remesh) {
+        // Clear global VertexBuffers before re-queuing (matches vkrender.cc: data
+        // accumulates in persistent VertexBuffers; clear before each frame).
+        materialData.clear();
+        colorData.clear();
+        lineData.clear();
+        transparentData.clear();
+
+        bool orthographic = m_Models[pageNumber][modelIndex].file->headerInfo.orthographic;
+
+        m_Models[pageNumber][modelIndex].file->QueueMesh(imageWidth, imageHeight, sceneMinBound, sceneMaxBound, m_Models[pageNumber][modelIndex].remesh, orthographic, m_Models[pageNumber][modelIndex].drawMode);
+
+        // Check if any VertexBuffer has data to render (vkrender.cc: drawBuffer skips empty).
+        bool hasRenderableData = !materialData.indices.empty() || !colorData.indices.empty() || !lineData.indices.empty() || !transparentData.indices.empty();
+
+        if (!hasRenderableData) {
+            QImage image{ imageWidth, imageHeight, QImage::Format_ARGB32 };
+            image.fill(Qt::black);
+            return image;
+        }
+
+        // Upload happens inside recordCommandBuffer (vkrender.cc: drawBuffer records
+        // upload + draw into the same command buffer session).
+        m_Models[pageNumber][modelIndex].remesh = false;
+        m_ReQueueModels = false;
+    }
+
+    m_Models[pageNumber][modelIndex].initialized = true;
+
+    VkSubresourceLayout imageSubresourceLayout;
+
+    glm::vec4 bgColor{
+        m_Models[pageNumber][modelIndex].file->headerInfo.background.r,
+        m_Models[pageNumber][modelIndex].file->headerInfo.background.g,
+        m_Models[pageNumber][modelIndex].file->headerInfo.background.b,
+        m_Models[pageNumber][modelIndex].file->headerInfo.background.a
+    };
+
+    // IBL is enabled when the v3d header contains an environment map name.
+    // Already resolved above -- use the values from the early check.
+    // Derive pipeline mode from global VertexBuffers (vkrender.cc: each data type
+    // drawn independently; no intermediate Mesh struct needed).
+    MeshPipelineMode pipelineMode = MeshPipelineMode::MaterialOnly;
+    if (!colorData.indices.empty() && !materialData.indices.empty()) {
+        pipelineMode = MeshPipelineMode::Mixed;
+    } else if (!colorData.indices.empty()) {
+        pipelineMode = MeshPipelineMode::ColorOnly;
+    }
+
+    unsigned char* imageData = m_HeadlessRenderer->render(
+        glm::ivec2{ imageWidth, imageHeight }, 
+        &imageSubresourceLayout, 
+        m_Models[pageNumber][modelIndex].viewMat, 
+        m_Models[pageNumber][modelIndex].projMat,
+        m_Models[pageNumber][modelIndex].normMat,
+        m_Models[pageNumber][modelIndex].file->materials,
+        std::vector<V3dHeaderInfo::Light>{ m_Models[pageNumber][modelIndex].file->headerInfo.light },
+        pipelineMode,
+        bgColor,
+        m_Models[pageNumber][modelIndex].file->headerInfo.orthographic,
+        useIBL,
+        iblPath,
+        m_Models[pageNumber][modelIndex].drawMode
+    );
 
     unsigned char* imgDataTmp = imageData;
 
-    size_t finalImageSize = width * height * 4;
+    // renderheadless.cpp clamps targetSize to maxFramebufferWidth/Height.
+    // Use the actual clamped dimensions from the subresource layout to avoid
+    // reading past the end of the returned buffer.
+    int32_t actualHeight = imageSubresourceLayout.size / imageSubresourceLayout.rowPitch;
+    int32_t actualRowPixels = imageSubresourceLayout.rowPitch / 4;
 
     std::vector<unsigned char> vectorData;
-    vectorData.reserve(finalImageSize);
+    vectorData.reserve(imageWidth * imageHeight * 4);
 
-    for (int32_t y = 0; y < height; y++) {
+    for (int32_t y = 0; y < actualHeight && y < imageHeight; y++) {
         unsigned int *row = (unsigned int*)imgDataTmp;
-        size_t rowBytes = width * 4;
+        size_t rowBytes = std::min(actualRowPixels, imageWidth) * 4;
     
         vectorData.resize(vectorData.size() + rowBytes);
         std::memcpy(vectorData.data() + vectorData.size() - rowBytes, (unsigned char*)row, rowBytes);
@@ -120,11 +349,31 @@ QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int wi
         imgDataTmp += imageSubresourceLayout.rowPitch;
     }
 
-    delete imageData;
+    delete[] imageData;
 
-    QImage image{ vectorData.data(), width, height, QImage::Format_ARGB32 };
+    // Vulkan outputs BGRA bytes (VK_FORMAT_B8G8R8A8_UNORM).
+    // On little-endian x86, QImage::Format_ARGB32 stores bytes as B,G,R,A --
+    // so the byte order matches directly. No swap needed.
+    QImage image{ vectorData.data(), imageWidth, imageHeight, QImage::Format_ARGB32 };
+    image = image.copy();  // Deep copy so we don't alias vectorData's buffer
 
-    image = image.mirrored(false, true);
+    // Prevent Qt/Okular from applying sRGB gamma correction on display.
+    // The shader handles color space (OUTPUT_AS_SRGB when srgb=true).
+    // With no managed color space, Qt treats pixel values as-is.
+    image.setColorSpace(QColorSpace());
+
+    // No vertical mirror needed: viewport {0,H,W,-H} maps NDC Y=+1 to
+    // framebuffer row 0, and QImage row 0 = top of screen.
+    // So scene +Y naturally appears at the top.
+
+    // Force all pixels to fully opaque so Okular draws them directly
+    // without alpha compositing over its paperColor background.
+    for (int y = 0; y < imageHeight; y++) {
+        unsigned char *row = image.scanLine(y);
+        for (int x = 0; x < imageWidth; x++) {
+            row[x * 4 + 3] = 255;
+        }
+    }
 
     m_Models[pageNumber][modelIndex].m_HasChanged = false;
     m_ModelImages[pageNumber][modelIndex] = image;
@@ -133,27 +382,58 @@ QImage V3dModelManager::RenderModel(size_t pageNumber, size_t modelIndex, int wi
 }
 
 V3dModel& V3dModelManager::Model(size_t pageNumber, size_t modelIndex) {
+    QMutexLocker locker(&m_ModelsMutex);
+
+    if (pageNumber >= m_Models.size()) {
+        qWarning() << "V3dModelManager::Model: pageNumber" << pageNumber << "out of range (size =" << m_Models.size() << ")";
+        return m_EmptyModel;
+    }
+    if (modelIndex >= m_Models[pageNumber].size()) {
+        qWarning() << "V3dModelManager::Model: modelIndex" << modelIndex << "out of range for page" << pageNumber << "(size =" << m_Models[pageNumber].size() << ")";
+        return m_EmptyModel;
+    }
+
     return m_Models[pageNumber][modelIndex];
 }
 
 std::vector<V3dModel>& V3dModelManager::Models(size_t pageNumber) {
+    QMutexLocker locker(&m_ModelsMutex);
+
+    // Sanity guard: refuse to resize to an absurdly large index
+    if (pageNumber > 100000) {
+        qWarning() << "V3dModelManager::Models: pageNumber" << pageNumber << "exceeds maximum allowed (100000)";
+        return m_EmptyModels;
+    }
+
+    if (pageNumber >= m_Models.size()) {
+        m_Models.resize(pageNumber + 1);
+    }
     return m_Models[pageNumber];
 }
 
 bool V3dModelManager::Empty() {
+    QMutexLocker locker(&m_ModelsMutex);
+
     return m_Models.empty();
 }
 
 glm::vec2 V3dModelManager::GetCanvasSize(size_t pageNumber) {
+    if (pageNumber >= m_Models.size() || m_Models[pageNumber].empty()) {
+        qWarning() << "V3dModelManager::GetCanvasSize: pageNumber" << pageNumber << "invalid or empty";
+        return glm::vec2{ 0.0f, 0.0f };
+    }
     return glm::vec2{ m_Models[pageNumber][0].file->headerInfo.canvasWidth, m_Models[pageNumber][0].file->headerInfo.canvasHeight };
 }
 
 void V3dModelManager::SetDocument(const Okular::Document* document) {
     m_Document = document;
+    m_ActiveModel = nullptr;
+    m_ActiveModelPage = -1;
+    m_Dragging = false;
 }
 
 bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
-    if (m_Models.size() == 0) {
+    if (m_Models.size() == 0 || !m_PageView) {
         // If the document has no models, this is just a plain PDF document, no need for any special interaction
         return false;
     }
@@ -163,6 +443,9 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
     m_MousePosition.y = (int)event->position().y();
 
     if (!m_Dragging) { m_LastMousePosition = m_MousePosition; return false; }
+
+    {
+        QMutexLocker locker(&m_ModelsMutex);
 
     glm::vec2 normalizedMousePositionOnPage = GetNormalizedPositionRelativeToPage(m_MousePosition, m_ActiveModelPage);
     glm::vec2 lastNormalizedMousePositionOnPage = GetNormalizedPositionRelativeToPage(m_LastMousePosition, m_ActiveModelPage);
@@ -175,6 +458,8 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
         float dpr = GetDevicePixelRatio();
 
         int pg = GetPageMouseIsOver();
+
+        EnsureCachedRequestSize((size_t)pg);
 
         int leftPixel = model.minBound.x * m_CachedRequestSizes[pg].size.x;
         int rightPixel = leftPixel + (model.maxBound.x - model.minBound.x) * m_CachedRequestSizes[pg].size.x;
@@ -211,6 +496,7 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
 
     if (controlKey && !shiftKey && !altKey) {
         float dpr = GetDevicePixelRatio();
+        EnsureCachedRequestSize((size_t)m_ActiveModelPage);
 
         glm::vec2 canvasSize = {
             (model.maxBound.x - model.minBound.x) * (m_CachedRequestSizes[m_ActiveModelPage].size.x),
@@ -226,6 +512,13 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
         model.dragModeRotate(normalizedPositionOnModel, lastNormalizedPositionOnModel, pageViewSize);
     }
 
+        } // QMutexLocker scope -- release BEFORE requesting refresh
+
+    // requestPixmapRefresh must be called OUTSIDE the mutex. If held while
+    // refreshPixmap() calls deletePixmaps(), Okular may request new pixmaps
+    // from another thread/context which calls RenderModel() -- that also acquires
+    // m_ModelsMutex, causing a deadlock (QMutex is non-recursive) or event-loop
+    // corruption that stops MouseMove routing.
     requestPixmapRefresh(m_ActiveModelPage);
 
     m_LastMousePosition = m_MousePosition;
@@ -234,7 +527,7 @@ bool V3dModelManager::mouseMoveEvent(QMouseEvent* event) {
 }
 
 bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
-    if (m_Models.size() == 0) {
+    if (m_Models.size() == 0 || !m_PageView) {
         // If the document has no models, this is just a plain PDF document, no need for any special interaction
         return false;
     }
@@ -243,19 +536,20 @@ bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
     m_MousePosition.x = (int)event->position().x();
     m_MousePosition.y = (int)event->position().y();
 
-    // m_LastMousePosition = m_MousePosition;
-
     if (!(event->button() & Qt::MouseButton::LeftButton)) {
         return false;
     }
 
     int pageMouseIsOver = GetPageMouseIsOver();
 
-    if (pageMouseIsOver == -1) return false;
+    if (pageMouseIsOver == -1 || pageMouseIsOver >= (int)m_Models.size()) return false;
 
     glm::vec2 normalizedMousePositionOnPage = GetNormalizedPositionRelativeToPage(m_MousePosition, pageMouseIsOver);
 
     V3dModel* modelMouseIsOver = nullptr;
+    {
+        QMutexLocker locker(&m_ModelsMutex);
+
     for (auto& model : m_Models[pageMouseIsOver]) {
         bool horizontallyOnModel = normalizedMousePositionOnPage.x > model.minBound.x && normalizedMousePositionOnPage.x < model.maxBound.x;
         bool verticallyOnModel = normalizedMousePositionOnPage.y > model.minBound.y && normalizedMousePositionOnPage.y < model.maxBound.y;
@@ -264,10 +558,12 @@ bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
 
         modelMouseIsOver = &model;
         break;
+        } // QMutexLocker scope
     }
 
     if (modelMouseIsOver != nullptr) {
         m_Dragging = true;
+        m_LastMousePosition = m_MousePosition;
         m_ActiveModel = modelMouseIsOver;
         m_ActiveModelPage = pageMouseIsOver;
 
@@ -278,7 +574,7 @@ bool V3dModelManager::mouseButtonPressEvent(QMouseEvent* event) {
 }
 
 bool V3dModelManager::mouseButtonReleaseEvent(QMouseEvent* event) {
-    if (m_Models.size() == 0) {
+    if (m_Models.size() == 0 || !m_PageView) {
         // If the document has no models, this is just a plain PDF document, no need for any special interaction
         return false;
     }
@@ -288,63 +584,129 @@ bool V3dModelManager::mouseButtonReleaseEvent(QMouseEvent* event) {
     }
 
     m_Dragging = false;
+    m_ActiveModel = nullptr;
+    m_ActiveModelPage = -1;
 
     return false;
 }
 
 bool V3dModelManager::wheelEvent(QWheelEvent* event) {
-    if (m_Models.size() == 0) {
+    if (m_Models.size() == 0 || !m_PageView) {
         // If the document has no models, this is just a plain PDF document, no need for any special interaction
         return false;
     }
 
-    if (m_ActiveModel == nullptr && m_ActiveModelPage == -1) {
+    // Only allow wheel zoom for standalone v3d files
+    // (single model that fills the entire page). For PDFs with embedded
+    // models, wheel always scrolls to avoid fighting Okular's scroll.
+    V3dModel* targetModel = nullptr;
+    int targetPage = -1;
+
+    if (m_Models.size() == 1 && m_Models[0].size() == 1) {
+        const auto& model = m_Models[0][0];
+        if (model.minBound.x <= 0.0f && model.maxBound.x >= 1.0f &&
+            model.minBound.y <= 0.0f && model.maxBound.y >= 1.0f) {
+            // Standalone v3d: zoom directly
+            targetModel = &m_Models[0][0];
+            targetPage = 0;
+        }
+    }
+
+    // If already actively dragging a model, use that instead
+    if (m_Dragging && m_ActiveModel) {
+        targetModel = m_ActiveModel;
+        targetPage = m_ActiveModelPage;
+    }
+
+    if (targetModel == nullptr || targetPage == -1) {
         return false;
     }
 
-    glm::vec2 normalizedPositionOnPage = GetNormalizedPositionRelativeToPage(m_MousePosition, m_ActiveModelPage);
+    {
+        QMutexLocker locker(&m_ModelsMutex);
 
-    bool horizontallyOnModel = normalizedPositionOnPage.x > m_ActiveModel->minBound.x && normalizedPositionOnPage.x < m_ActiveModel->maxBound.x;
-    bool verticallyOnModel = normalizedPositionOnPage.y > m_ActiveModel->minBound.y && normalizedPositionOnPage.y < m_ActiveModel->maxBound.y;
+    glm::vec2 normalizedPositionOnPage = GetNormalizedPositionRelativeToPage(m_MousePosition, targetPage);
+
+    bool horizontallyOnModel = normalizedPositionOnPage.x > targetModel->minBound.x && normalizedPositionOnPage.x < targetModel->maxBound.x;
+    bool verticallyOnModel = normalizedPositionOnPage.y > targetModel->minBound.y && normalizedPositionOnPage.y < targetModel->maxBound.y;
 
     if (!horizontallyOnModel || !verticallyOnModel) {
         return false;
     }
 
     if (event->angleDelta().y() < 0) {
-        m_ActiveModel->zoom /= m_ActiveModel->file->headerInfo.zoomFactor;
+        targetModel->Zoom /= targetModel->file->headerInfo.zoomFactor;
     } else {
-        m_ActiveModel->zoom *= m_ActiveModel->file->headerInfo.zoomFactor;
+        targetModel->Zoom *= targetModel->file->headerInfo.zoomFactor;
     }
 
     float maxZoom = std::sqrt(std::numeric_limits<float>::max());
     float minZoom = 1 / maxZoom;
 
-    if (m_ActiveModel->zoom < minZoom) {
-        m_ActiveModel->zoom = minZoom;
-    } else if (m_ActiveModel->zoom > maxZoom) {
-        m_ActiveModel->zoom = maxZoom;
+    if (targetModel->Zoom < minZoom) {
+        targetModel->Zoom = minZoom;
+    } else if (targetModel->Zoom > maxZoom) {
+        targetModel->Zoom = maxZoom;
     }
 
     float dpr = GetDevicePixelRatio();
+    EnsureCachedRequestSize((size_t)targetPage);
 
     glm::vec2 canvasSize = {
-        (m_ActiveModel->maxBound.x - m_ActiveModel->minBound.x) * (m_CachedRequestSizes[m_ActiveModelPage].size.x / dpr),
-        (m_ActiveModel->maxBound.y - m_ActiveModel->minBound.y) * (m_CachedRequestSizes[m_ActiveModelPage].size.y / dpr),
+        (targetModel->maxBound.x - targetModel->minBound.x) * (m_CachedRequestSizes[targetPage].size.x / dpr),
+        (targetModel->maxBound.y - targetModel->minBound.y) * (m_CachedRequestSizes[targetPage].size.y / dpr),
     };
 
-    m_ActiveModel->setProjection(canvasSize);
-    requestPixmapRefresh(m_ActiveModelPage);
+    targetModel->setProjection(canvasSize);
+        } // QMutexLocker scope
+
+    requestPixmapRefresh((size_t)targetPage);
 
     return true;
 }
 
 bool V3dModelManager::keyPressEvent(QKeyEvent* event) {
-    if (event->key() == Qt::Key_T) {
-        std::cout << "TEST" << std::endl;
+    if (m_Models.size() == 0 || !m_PageView) {
+        return false;
     }
 
-    return true;
+    if (event->key() == Qt::Key_H) {
+        int pageMouseIsOver = GetPageMouseIsOver();
+        if (pageMouseIsOver == -1 || pageMouseIsOver >= (int)m_Models.size()) return false;
+
+        glm::vec2 normalizedMousePositionOnPage = GetNormalizedPositionRelativeToPage(m_MousePosition, pageMouseIsOver);
+        for (auto& model : m_Models[pageMouseIsOver]) {
+            bool horizontallyOnModel = normalizedMousePositionOnPage.x > model.minBound.x && normalizedMousePositionOnPage.x < model.maxBound.x;
+            bool verticallyOnModel = normalizedMousePositionOnPage.y > model.minBound.y && normalizedMousePositionOnPage.y < model.maxBound.y;
+
+            if (horizontallyOnModel && verticallyOnModel) {
+                model.home();
+                requestPixmapRefresh(pageMouseIsOver);
+                break;
+            }
+        }
+        return true;
+    }
+
+    if (event->key() == Qt::Key_M) {
+        int pageMouseIsOver = GetPageMouseIsOver();
+        if (pageMouseIsOver == -1 || pageMouseIsOver >= (int)m_Models.size()) return false;
+
+        glm::vec2 normalizedMousePositionOnPage = GetNormalizedPositionRelativeToPage(m_MousePosition, pageMouseIsOver);
+        for (auto& model : m_Models[pageMouseIsOver]) {
+            bool horizontallyOnModel = normalizedMousePositionOnPage.x > model.minBound.x && normalizedMousePositionOnPage.x < model.maxBound.x;
+            bool verticallyOnModel = normalizedMousePositionOnPage.y > model.minBound.y && normalizedMousePositionOnPage.y < model.maxBound.y;
+
+            if (horizontallyOnModel && verticallyOnModel) {
+                model.cycleMode();
+                requestPixmapRefresh(pageMouseIsOver);
+                break;
+            }
+        }
+        return true;
+    }
+
+    return false;
 }
 
 void V3dModelManager::DrawMouseBoundaries(QImage* img, size_t pageNumber) {
@@ -407,8 +769,14 @@ void V3dModelManager::CacheRequest(Okular::PixmapRequest* request) {
 #endif
 }
 
+void V3dModelManager::EnsureCachedRequestSize(size_t pageNumber) {
+    if (m_CachedRequestSizes.size() <= pageNumber) {
+        m_CachedRequestSizes.resize(pageNumber + 1);
+    }
+}
+
 void V3dModelManager::CacheRequestSize(size_t pageNumber, int width, int height, int priority) {
-    if (m_Pages.size() < pageNumber + 1) {
+    if (m_CachedRequestSizes.size() < pageNumber + 1) {
         m_CachedRequestSizes.resize(pageNumber + 1);
     }
 
@@ -447,6 +815,8 @@ float V3dModelManager::GetDevicePixelRatio() {
 }
 
 std::vector<V3dModelManager::PageBorders> V3dModelManager::GetPageBordersForVisiblePages() {
+    if (!m_PageView) return {};
+
     auto visiblePages = m_Document->visiblePageRects();
 
     std::vector<PageBorders> pageBorders{ };
@@ -463,6 +833,7 @@ std::vector<V3dModelManager::PageBorders> V3dModelManager::GetPageBordersForVisi
         Okular::NormalizedRect rect = visiblePages[0]->rect;
 
         pageBorders[0].pageNumber = visiblePages[0]->pageNumber;
+        EnsureCachedRequestSize(pageBorders[0].pageNumber);
 
         glm::vec2 pageSize{ m_CachedRequestSizes[pageBorders[0].pageNumber].size.x / dpr, m_CachedRequestSizes[pageBorders[0].pageNumber].size.y / dpr };
 
@@ -497,6 +868,7 @@ std::vector<V3dModelManager::PageBorders> V3dModelManager::GetPageBordersForVisi
         size_t i = 0;
         for (auto& page : visiblePages) {
             Okular::NormalizedRect rect = page->rect;
+            EnsureCachedRequestSize(page->pageNumber);
             glm::vec2 pageSize{ m_CachedRequestSizes[page->pageNumber].size.x / dpr, m_CachedRequestSizes[page->pageNumber].size.y / dpr };
 
             pageBorders[i].pageNumber = page->pageNumber;
@@ -519,6 +891,7 @@ std::vector<V3dModelManager::PageBorders> V3dModelManager::GetPageBordersForVisi
         // First page
         auto& firstPage = visiblePages[0];
         Okular::NormalizedRect firstPageRect = firstPage->rect;
+        EnsureCachedRequestSize(firstPage->pageNumber);
         glm::vec2 firstPageSize{ m_CachedRequestSizes[firstPage->pageNumber].size.x / dpr, m_CachedRequestSizes[firstPage->pageNumber].size.y / dpr };
 
         pageBorders[0].pageNumber = firstPage->pageNumber;
@@ -528,6 +901,7 @@ std::vector<V3dModelManager::PageBorders> V3dModelManager::GetPageBordersForVisi
 
             float totalPageHeight = 0;
             for (int i = visiblePages[0]->pageNumber; i <= visiblePages[visiblePages.size() - 1]->pageNumber; ++i) {
+                EnsureCachedRequestSize((size_t)i);
                 totalPageHeight += m_CachedRequestSizes[i].size.y / dpr;
             }
 
@@ -548,6 +922,7 @@ std::vector<V3dModelManager::PageBorders> V3dModelManager::GetPageBordersForVisi
         for (auto& page : visiblePages) {
             if (i == 0) { ++i; continue; } // First page is the base case and is handled above
 
+            EnsureCachedRequestSize(page->pageNumber);
             glm::vec2 pageSize{ m_CachedRequestSizes[page->pageNumber].size.x / dpr, m_CachedRequestSizes[page->pageNumber].size.y / dpr };
 
             pageBorders[i].hi = viewPortSize.y - pageBorders[i - 1].lo + 10;
@@ -582,13 +957,23 @@ glm::vec2 V3dModelManager::GetNormalizedPositionRelativeToPage(const glm::vec2& 
     std::vector<PageBorders> pageBorders = GetPageBordersForVisiblePages();
 
     float dpr = GetDevicePixelRatio();
+    EnsureCachedRequestSize((size_t)pageNumber);
     glm::vec2 pageSize{ m_CachedRequestSizes[pageNumber].size.x / dpr, m_CachedRequestSizes[pageNumber].size.y / dpr };
 
     auto it = std::find_if(pageBorders.begin(), pageBorders.end(), [&pageNumber](PageBorders border){
         return border.pageNumber == pageNumber;
     });
 
+    if (it == pageBorders.end()) {
+        return glm::vec2{ 0.0f, 0.0f };
+    }
+
     PageBorders& border = *it;
+
+    // Guard against zero page size which causes division-by-zero.
+    if (pageSize.x <= 0.0f || pageSize.y <= 0.0f) {
+        return glm::vec2{ 0.0f, 0.0f };
+    }
 
     return (pos - glm::vec2{ border.le, border.hi }) / pageSize;
 }
@@ -597,47 +982,17 @@ QAbstractScrollArea* V3dModelManager::GetPageViewWidget() {
     QAbstractScrollArea* pageView = nullptr;
 
     for (QWidget* widget : QApplication::allWidgets()) {
+        // Okular's PageView class inherits from QAbstractScrollArea and has the
+        // Q_OBJECT macro, so its meta-object class name is "PageView".  Using the
+        // Qt meta-object system to identify it by type is far more robust than
+        // counting children (QBoxLayout / QFrame heuristics) which can break if
+        // Okular's internal widget hierarchy changes.
+        if (!widget->inherits("PageView")) {
+            continue;
+        }
+
         QAbstractScrollArea* scrollArea = dynamic_cast<QAbstractScrollArea*>(widget);
-
         if (scrollArea == nullptr) {
-            continue;
-        }
-
-        QWidget* parent = dynamic_cast<QWidget*>(widget->parent());
-
-        if (parent == nullptr) {
-            continue;
-        }
-
-        // if (parent->children().size() != 9) {
-        if (parent->children().size() < 8) {
-            continue;
-        }
-
-        int QBoxLayoutCount = 0;
-        for (auto child : parent->children()) {
-            QBoxLayout* qBox = dynamic_cast<QBoxLayout*>(child);
-
-            if (qBox != nullptr) {
-                QBoxLayoutCount += 1;
-            }
-        }
-
-        if (QBoxLayoutCount == 0) {
-            continue;
-        }
-
-        int QFrameCount = 0;
-        for (auto child : parent->children()) {
-            QFrame* qFrame = dynamic_cast<QFrame*>(child);
-
-            if (qFrame != nullptr) {
-                QFrameCount += 1;
-            }
-        }
-
-        // if (QFrameCount != 6) {
-        if (QFrameCount < 5) {
             continue;
         }
 
@@ -645,7 +1000,7 @@ QAbstractScrollArea* V3dModelManager::GetPageViewWidget() {
             std::cout << "ERROR, multiple pageViews found" << std::endl;
         }
 
-        pageView = dynamic_cast<QAbstractScrollArea*>(widget);
+        pageView = scrollArea;
     }
 
     if (pageView == nullptr) {
@@ -667,13 +1022,342 @@ void V3dModelManager::requestPixmapRefresh(size_t pageNumber) {
 }
 
 void V3dModelManager::refreshPixmap(size_t pageNumber) {
+    if (pageNumber >= m_Pages.size() || !m_Pages[pageNumber]) {
+        return;
+    }
     m_Pages[pageNumber]->deletePixmaps();
 
-    QKeyEvent* keyEvent = new QKeyEvent(
+    QKeyEvent keyEvent(
         QEvent::KeyRelease, // type
         Qt::Key_Control,    // key
         Qt::NoModifier      // modifiers
     );
 
-    ProtectedFunctionCaller::callKeyReleaseEvent(m_PageView, keyEvent);
+    ProtectedFunctionCaller::callKeyReleaseEvent(m_PageView, &keyEvent);
+}
+
+std::string V3dModelManager::resolveIBLPath(const std::string& imageName, bool doSchedule) {
+    if (imageName.empty()) return "";
+
+    // Strip leading "/" from old files that may still store an absolute path.
+    // Preserve relative paths (e.g., "snowyField/refl0") in case we use subdirs later.
+    std::string name = imageName;
+    if (!name.empty() && name[0] == '/') {
+        size_t lastSlash = name.find_last_of('/');
+        name = (lastSlash != 0) ? name.substr(lastSlash + 1) : name.substr(1);
+    }
+    // Remove trailing slash if present.
+    while (!name.empty() && name.back() == '/') name.pop_back();
+    if (name.empty()) return "";
+
+    // Helper: check if a path exists and return it.
+    auto tryPath = [](const std::string& path) -> std::string {
+        std::ifstream f(path.c_str());
+        return f.good() ? path : "";
+    };
+
+    // The iblPath must point to a directory containing diffuse.exr + refl0..10.exr.
+    // We also verify that the parent directory has refl.exr (common BRDF LUT).
+    auto tryIBLDir = [&tryPath](const std::string& dir) -> std::string {
+        if (!dir.empty() && dir.back() == '/') return dir;
+        std::string d = dir + "/";
+        // Check diffuse.exr exists in this directory.
+        std::string diffuse = tryPath(d + "diffuse.exr");
+        if (diffuse.empty()) return "";
+        // Check refl.exr exists in the parent directory.
+        std::string parent = d.substr(0, d.size() - 1);
+        size_t slash = parent.find_last_of('/');
+        if (slash == std::string::npos) return "";
+        std::string parentDir = parent.substr(0, slash + 1);
+        std::string refl = tryPath(parentDir + "refl.exr");
+        if (refl.empty()) return "";
+        return d.substr(0, d.size() - 1);  // Return without trailing slash.
+    };
+
+    auto getIBLBase = []() -> std::string {
+        const char* envDir = std::getenv("OKULAR_V3D_IMAGE_DIR");
+        if (envDir && strlen(envDir) > 0) return std::string(envDir);
+        QString dataDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+        return QString(QStringLiteral("%1/okular/ibl")).arg(dataDir).toStdString();
+    };
+
+    std::string iblBase = getIBLBase();
+
+    // Strategy A: name contains a "/" -- it's a relative subdirectory path (e.g., "snowyField/refl0").
+    // Try as-is first.
+    if (name.find('/') != std::string::npos) {
+        std::string dir = iblBase + "/" + name;
+        std::string found = tryIBLDir(dir);
+        if (!found.empty()) return found;
+    }
+
+    // Strategy B: name is a bare identifier (e.g., "snowyField").
+    // 1. Check <iblBase>/<name>/ as an IBL subdirectory.
+    std::string dir = iblBase + "/" + name;
+    std::string found = tryIBLDir(dir);
+    if (!found.empty()) return found;
+
+    // Strategy C: scan all immediate subdirectories of iblBase for one containing diffuse.exr.
+    // This handles the case where imageName matches a file inside a subdir we haven't guessed yet.
+    if (!iblBase.empty()) {
+        QDir qDir(QString::fromStdString(iblBase));
+        QStringList subdirs = qDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString& sd : subdirs) {
+            std::string candidate = iblBase + "/" + sd.toStdString();
+            found = tryIBLDir(candidate);
+            if (!found.empty()) return found;
+        }
+    }
+
+    // 4. Not found locally. Schedule deferred download prompt only if requested.
+    if (doSchedule) {
+        scheduleIBLDownload(name, iblBase);
+    }
+    return "";
+}
+
+void V3dModelManager::scheduleIBLDownload(const std::string& imageName, const std::string& iblBase) {
+    // Debounce: avoid spamming the user with repeated prompts for the same image.
+    static std::set<std::string> pendingDownloads;
+    if (pendingDownloads.count(imageName)) return;
+
+    pendingDownloads.insert(imageName);
+
+    m_PendingIBLImageName = imageName;
+    m_PendingIBLIblBase = iblBase;
+
+    // Schedule on the main event loop so we're outside the render path / mutex hold.
+    QTimer* timer = new QTimer();
+    timer->setSingleShot(true);
+    QObject::connect(timer, &QTimer::timeout, [this]() {
+        if (!m_Destroying) performIBLDownload(m_PendingIBLImageName, m_PendingIBLIblBase);
+    });
+    timer->start(0);
+}
+
+void V3dModelManager::performIBLDownload(const std::string& imageName, const std::string& iblBase) {
+    // If the name contains an absolute path, extract just the filename; relative paths are ok.
+    std::string name = imageName;
+    if (!name.empty() && name[0] == '/') {
+        size_t lastSlash = name.rfind('/');
+        name = (lastSlash != 0) ? name.substr(lastSlash + 1) : name.substr(1);
+    }
+
+    const char* imageUrlEnv = std::getenv("OKULAR_V3D_IMAGE_URL");
+    std::string baseUrl = imageUrlEnv && strlen(imageUrlEnv) > 0
+        ? std::string(imageUrlEnv)
+        : "https://vectorgraphics.gitlab.io/asymptote/ibl";
+
+    QString qImageName = QString::fromStdString(name);
+    QString qIblBase = iblBase.empty()
+        ? QString(QStringLiteral("%1/okular/ibl")).arg(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
+        : QString::fromStdString(iblBase);
+
+    // Download directory: <iblBase>/<imageName>/  (e.g., $XDG_DATA_HOME/okular/ibl/snowyField/)
+    QString envDir = qIblBase + QLatin1Char('/') + qImageName;
+
+    // Files to download:
+    //   refl.exr          > <iblBase>/refl.exr       (common BRDF LUT, shared by all)
+    //   diffuse.exr       > <envDir>/diffuse.exr     (irradiance map)
+    //   refl0.exr..refl10.exr  > <envDir>/           (reflection mip levels)
+    struct DownloadTask {
+        QString remoteFile;  // filename on server
+        QString localPath;   // full local path to write
+    };
+
+    std::vector<DownloadTask> tasks;
+
+    // refl.exr -- common, stored at <iblBase>/refl.exr on the server.
+    QString reflLocal = qIblBase + QStringLiteral("/refl.exr");
+    tasks.push_back({QStringLiteral("refl.exr"), reflLocal});
+
+    // Environment map files live in <imageName>/ subdirectory on the server.
+    QString remoteSubdir = qImageName + QLatin1Char('/');
+    tasks.push_back({remoteSubdir + QStringLiteral("diffuse.exr"), envDir + QStringLiteral("/diffuse.exr")});
+    for (int i = 0; i <= 10; ++i) {
+        QString fname = QString::fromLatin1("refl%1.exr").arg(i);
+        tasks.push_back({remoteSubdir + fname, envDir + QLatin1Char('/') + fname});
+    }
+
+    // Build the message.
+    QString msg = QString::fromLatin1("The IBL environment map '%1' was not found locally.\n\n")
+        .arg(qImageName);
+    msg += QString::fromLatin1("Would you like to download it (%1 files) from:\n%2?");
+    msg = msg.arg(tasks.size()).arg(QString::fromStdString(baseUrl));
+
+    // Show a QMessageBox asking if the user wants to download.
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    int result = QMessageBox::question(
+        nullptr,
+        QStringLiteral("IBL Environment Map Missing"),
+        msg,
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes
+    );
+    QApplication::restoreOverrideCursor();
+
+    if (result != QMessageBox::Yes) {
+        // User declined -- render normally without IBL.
+        m_IBLDeclined = true;
+        std::set<size_t> pages;
+        for (const auto& [pn, mi] : m_ModelsWithMissingIBL) {
+            pages.insert(pn);
+        }
+        m_ModelsWithMissingIBL.clear();
+        for (size_t pn : pages) {
+            QTimer* timer = new QTimer();
+            timer->setSingleShot(true);
+            QObject::connect(timer, &QTimer::timeout, [this, pn]() {
+                if (!m_Destroying) refreshPixmap(pn);
+            });
+            timer->start(25);
+        }
+        return;
+    }
+
+    QDir dir;
+    if (!dir.mkpath(envDir)) {
+        std::cout << "Failed to create directory: " << envDir.toStdString() << std::endl;
+        return;
+    }
+    if (!dir.exists(qIblBase) && !dir.mkpath(qIblBase)) {
+        std::cout << "Failed to create base IBL directory: " << qIblBase.toStdString() << std::endl;
+        return;
+    }
+
+    // Start async downloads. Each reply's finished signal calls onIBLDownloadReplyFinished().
+    // NOTE: no parent -- we manage lifetime manually to avoid QObject child deletion conflicts.
+    m_IBLNetManager = new QNetworkAccessManager();
+    m_PendingDownloadCount = 0;
+
+    for (const auto& task : tasks) {
+        // Skip refl.exr if it already exists.
+        if (task.localPath == reflLocal && QFile::exists(task.localPath)) {
+            continue;
+        }
+
+        QString urlStr = QString::fromStdString(baseUrl) + QLatin1Char('/') + task.remoteFile;
+        QUrl reqUrl(urlStr);
+        QNetworkRequest netRequest(reqUrl);
+        QNetworkReply* reply = m_IBLNetManager->get(netRequest);
+
+        // Store the local path in the reply's property so we can write it on completion.
+        reply->setProperty("localPath", task.localPath);
+        reply->setProperty("remoteFile", task.remoteFile);
+
+        m_PendingDownloadCount++;
+        // Store a raw pointer to 'this' in the reply so we can route the callback.
+        reply->setProperty("manager", QVariant::fromValue(reinterpret_cast<qlonglong>(this)));
+        QObject::connect(reply, &QNetworkReply::finished, reply, [this, reply]() {
+            onIBLDownloadReplyFinished(reply);
+        });
+    }
+
+    if (m_PendingDownloadCount == 0) {
+        // All files already present -- nothing to download.
+        delete m_IBLNetManager;
+        m_IBLNetManager = nullptr;
+        onIBLDownloadComplete();
+    }
+}
+
+void V3dModelManager::onIBLDownloadReplyFinished(QNetworkReply* reply) {
+    if (m_Destroying) { reply->deleteLater(); return; }
+
+    QString localPath = reply->property("localPath").toString();
+    QString remoteFile = reply->property("remoteFile").toString();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        std::cout << "IBL download failed for " << remoteFile.toStdString()
+                  << ": " << reply->errorString().toStdString() << std::endl;
+        reply->deleteLater();
+        m_PendingDownloadCount--;
+        if (m_PendingDownloadCount == 0) onIBLDownloadComplete();
+        return;
+    }
+
+    // Reject HTML responses (directory listings, 404 pages).
+    QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
+    if (contentType.contains(QLatin1String("text/html"))) {
+        std::cout << "IBL: server returned HTML for " << remoteFile.toStdString() << ", skipping." << std::endl;
+        reply->deleteLater();
+        m_PendingDownloadCount--;
+        if (m_PendingDownloadCount == 0) onIBLDownloadComplete();
+        return;
+    }
+
+    QByteArray data = reply->readAll();
+    reply->deleteLater();
+
+    if (!data.isEmpty()) {
+        QFile file(localPath);
+        if (file.open(QIODevice::WriteOnly)) {
+            file.write(data);
+            file.close();
+        } else {
+            std::cout << "IBL: failed to write " << localPath.toStdString() << std::endl;
+        }
+    }
+
+    m_PendingDownloadCount--;
+    if (m_PendingDownloadCount == 0) {
+        onIBLDownloadComplete();
+    }
+}
+
+void V3dModelManager::onIBLDownloadComplete() {
+    if (m_IBLNetManager) {
+        delete m_IBLNetManager;
+        m_IBLNetManager = nullptr;
+    }
+
+    m_ReQueueModels = true;
+    std::set<size_t> affectedPages;
+    for (const auto& [pn, mi] : m_ModelsWithMissingIBL) {
+        if (m_Models.size() > pn && m_Models[pn].size() > mi) {
+            m_Models[pn][mi].m_HasChanged = true;
+        }
+        affectedPages.insert(pn);
+    }
+    m_ModelsWithMissingIBL.clear();
+
+    // Force Okular to re-request pixmaps for each affected page.
+    // Stagger the calls to avoid the 1/60s refresh throttle.
+    for (size_t pn : affectedPages) {
+        QTimer* timer = new QTimer();
+        timer->setSingleShot(true);
+        QObject::connect(timer, &QTimer::timeout, [this, pn]() {
+            if (!m_Destroying) refreshPixmap(pn);
+        });
+        timer->start(25);
+    }
+}
+
+std::string V3dModelManager::getIBLBase() const {
+    const char* envDir = std::getenv("OKULAR_V3D_IMAGE_DIR");
+    if (envDir && strlen(envDir) > 0) return std::string(envDir);
+    QString dataDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return QString(QStringLiteral("%1/okular/ibl")).arg(dataDir).toStdString();
+}
+
+void V3dModelManager::scheduleIBLPrompt(const std::string& imageName, const std::string& iblBase) {
+    // Debounce: avoid spamming the user with repeated prompts for the same image.
+    static std::set<std::string> pendingPrompts;
+    if (pendingPrompts.count(imageName)) return;
+
+    pendingPrompts.insert(imageName);
+
+    // Post a custom event to qApp's main thread event queue. The IBLEventFilter
+    // will catch it and run the callback on the main thread, showing the dialog.
+    // This works from both background threads (PDF loading) and the main thread
+    // (standalone .v3d), since postEvent always delivers to the receiver's thread.
+    IBLPromptEvent* event = new IBLPromptEvent(
+        [this, imageName, iblBase]() -> bool {
+            performIBLDownload(imageName, iblBase);
+            return !m_IBLDeclined;
+        },
+        nullptr  // No semaphore needed -- post-and-forget.
+    );
+
+    QCoreApplication::postEvent(qApp, event);
 }

@@ -8,6 +8,18 @@
 #include "V3dObject.h"
 #include "xstream.h"
 
+// BezierCurve is needed as a member for OUTLINE mode boundary curves.
+// Matches Asymptote drawSurface::C — persistent per-object, not local.
+#include "../../asymptote/bbox2.h"
+#include "../../asymptote/beziercurve.h"
+
+// Global materials pointer: set by V3dFile::QueueMesh before iterating objects.
+// Mirrors Asymptote's camp::materialIndex pattern — provides per-object access
+// to material data for transparency checks (diffuse.A < 1.0).
+struct V3dMaterial;
+namespace camp { extern const std::vector<V3dMaterial>* materials; }
+
+
 enum ObjectTypes {
     MATERIAL = 1,
     TRANSFORM = 2,
@@ -56,6 +68,7 @@ struct V3dMaterial {
     FLOAT shininess;
     FLOAT metallic;
     FLOAT fresnel0;
+    FLOAT lightOn;
 };
 
 class V3dBezierPatch : public V3dObject {
@@ -63,16 +76,21 @@ public:
     V3dBezierPatch(
         xdr::ixstream& xdrFile, 
         V3D_BOOL doublePrecision);
+    V3dBezierPatch(std::array<TRIPLE, 16> controlPoints, UINT centerIndex, UINT materialIndex);
     ~V3dBezierPatch() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 16> controlPoints;
     UINT centerIndex;
     UINT materialIndex;
+    // Persistent transparency flag (matches BezierPatch::transparent in bezierpatch.h).
+    // Set during tessellation; used by the fullyOnscreen fast path to route to
+    // transparentData vs materialData, exactly like BezierPatch::append().
+    bool isTransparent{ false };
 
 private:
+    BezierCurve C;  // Match Asymptote drawSurface::C — persistent member for OUTLINE boundary curves
     std::vector<float> m_Vertices{ };
     std::vector<unsigned int> m_Indices{ };
 };
@@ -82,14 +100,19 @@ public:
     V3dBezierTriangle(
         xdr::ixstream& xdrFile, 
         V3D_BOOL doublePrecision);
+    V3dBezierTriangle(std::array<TRIPLE, 10> controlPoints, UINT centerIndex, UINT materialIndex);
     ~V3dBezierTriangle() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 10> controlPoints;
     UINT centerIndex;
     UINT materialIndex;
+    // Persistent transparency flag (matches BezierTriangle::transparent in bezierpatch.h).
+    bool isTransparent{ false };
+
+private:
+    BezierCurve C;  // Match Asymptote drawSurface::C
 };
 
 class V3dBezierPatchWithCornerColors : public V3dObject {
@@ -99,13 +122,15 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dBezierPatchWithCornerColors() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 16> controlPoints;
     UINT centerIndex;
     UINT materialIndex;
     std::array<RGBA, 4> cornerColors;
+
+private:
+    BezierCurve C;
 };
 
 class V3dBezierTriangleWithCornerColors : public V3dObject {
@@ -115,13 +140,15 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dBezierTriangleWithCornerColors() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 10> controlPoints;
     UINT centerIndex;
     UINT materialIndex;
     std::array<RGBA, 3> cornerColors;
+
+private:
+    BezierCurve C;
 };
 
 class V3dStraightPlanarQuad : public V3dObject {
@@ -131,12 +158,14 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dStraightPlanarQuad() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 4> vertices;
     UINT centerIndex;
     UINT materialIndex;
+
+private:
+    BezierCurve C;
 };
 
 class V3dStraightTriangle : public V3dObject {
@@ -146,12 +175,14 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dStraightTriangle() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 3> vertices;
     UINT centerIndex;
     UINT materialIndex;
+
+private:
+    BezierCurve C;
 };
 
 class V3dStraightPlanarQuadWithCornerColors : public V3dObject {
@@ -161,13 +192,15 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dStraightPlanarQuadWithCornerColors() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 4> vertices;
     UINT centerIndex;
     UINT materialIndex;
     std::array<RGBA, 4> cornerColors;
+
+private:
+    BezierCurve C;
 };
 
 class V3dStraightTriangleWithCornerColors : public V3dObject {
@@ -177,13 +210,15 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dStraightTriangleWithCornerColors() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 3> vertices;
     UINT centerIndex;
     UINT materialIndex;
     std::array<RGBA, 3> cornerColors;
+
+private:
+    BezierCurve C;
 };
 
 class V3dTriangleGroup : public V3dObject {
@@ -193,8 +228,7 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dTriangleGroup() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     UINT nI;
     UINT nP;
@@ -221,8 +255,7 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dSphere() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     TRIPLE center;
     REAL radius;
@@ -237,8 +270,7 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dHemiSphere() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     TRIPLE center;
     REAL radius;
@@ -255,8 +287,7 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dDisk() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     TRIPLE center;
     REAL radius;
@@ -273,8 +304,7 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dCylinder() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     TRIPLE center;
     REAL radius;
@@ -283,6 +313,7 @@ public:
     UINT materialIndex;
     REAL polarAngle;
     REAL azimuthalAngle;
+    V3D_BOOL core;
 };
 
 class V3dTube : public V3dObject {
@@ -292,8 +323,7 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dTube() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 4> controlPoints;
     REAL width;
@@ -307,10 +337,10 @@ public:
     V3dBezierCurve(
         xdr::ixstream& xdrFile, 
         V3D_BOOL doublePrecision);
+    V3dBezierCurve(std::array<TRIPLE, 4> controlPoints, UINT centerIndex, UINT materialIndex);
     ~V3dBezierCurve() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 4> controlPoints;
     UINT centerIndex;
@@ -322,10 +352,10 @@ public:
     V3dLineSegment(
         xdr::ixstream& xdrFile, 
         V3D_BOOL doublePrecision);
+    V3dLineSegment(std::array<TRIPLE, 2> endpoints, UINT centerIndex, UINT materialIndex);
     ~V3dLineSegment() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     std::array<TRIPLE, 2> endpoints;
     UINT centerIndex;
@@ -339,10 +369,9 @@ public:
         V3D_BOOL doublePrecision);
     ~V3dPixel() override = default;
 
-    std::vector<float> getVertexData() override;
-    std::vector<unsigned int> getIndices() override;
+    void QueueMesh(int imageWidth, int imageHeight, triple sceneMinBound, triple sceneMaxBound, bool remesh, bool orthographic, DrawMode drawMode) override;
 
     TRIPLE position;
-    UINT centerIndex;
+    REAL width;
     UINT materialIndex;
 };
